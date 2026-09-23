@@ -103,7 +103,9 @@ resilience4j.circuitbreaker:
 resilience4j.timelimiter:
   configs:
     default:
-      timeoutDuration: 30s
+      # 熔断器的超时上限：必须高于各 client 的 readTimeout，否则会把它们的配置压掉
+      # （原来 30s 会让所有 Feign 调用在 30s 被掐断，readTimeout 形同虚设）
+      timeoutDuration: 330s
       cancelRunningFuture: true
 
 mybatis-plus:
@@ -135,8 +137,13 @@ spring:
             readTimeout: 60000
           fs-bi-service:
             connectTimeout: 1000
-            readTimeout: 300000
+            # BI 查询属于工具调用：与工具方法的超时口径一致，卡住要尽快失败
+            readTimeout: 60000
           fs-lm-service:
+            connectTimeout: 1000
+            # 向量化 / 重排序等工具类调用；模型会话补全由 agent 自己的 HTTP 客户端负责，不受此处影响
+            readTimeout: 60000
+          fs-agent-service:
             connectTimeout: 1000
             readTimeout: 300000
   main:

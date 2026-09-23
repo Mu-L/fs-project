@@ -10,6 +10,7 @@ import CollapseItem from './CollapseItem.vue'
 import ConditionSlice from './ConditionSlice.vue'
 import NodeSlice from './NodeSlice.vue'
 import OutputSlice from './OutputSlice.vue'
+import SectionSlice from './SectionSlice.vue'
 import { useCollapse } from './collapse'
 
 const active = ref('property')
@@ -51,31 +52,32 @@ const summaryTags = (item: any) => {
     <el-tab-pane label="节点属性" name="property">
       <el-form :model="model" label-position="top">
         <NodeSlice v-model="model" :instance="$props.instance" :config="$props.config" :tips="tips" />
-        <el-form-item label="" class="title">分支配置</el-form-item>
-        <el-form-item label="">
-          <div class="case-slice">
-            <CollapseItem
-              :key="item.id"
-              v-for="(item, index) in model.data.cases"
-              :title="item.name || '分支 ' + (index + 1)"
-              :tags="summaryTags(item)"
-              :expanded="isOpen(index)"
-              @toggle="toggle(index)"
-              @delete="handleRemove(index)">
-              <el-input v-model="item.name" placeholder="分支名称，同时作为连线名称" />
-              <ConditionSlice v-model="model.data.cases[index]" :instance="$props.instance" :active-item="model" />
-            </CollapseItem>
-            <el-button link type="primary" :icon="Plus" @click="handleAdd">添加分支</el-button>
-          </div>
-        </el-form-item>
-        <el-form-item label="默认分支名称">
-          <el-input v-model="model.data.defaultName" placeholder="以上分支均未命中时走该分支" />
-        </el-form-item>
-        <el-form-item label="">
-          <div class="case-tips">
-            节点右侧每个分支各有一个锚点，可分别连线到不同节点；移除分支时其连线一并移除
-          </div>
-        </el-form-item>
+        <SectionSlice title="分支配置">
+          <el-form-item label="">
+            <div class="case-slice">
+              <CollapseItem
+                :key="item.id"
+                v-for="(item, index) in model.data.cases"
+                :title="item.name || '分支 ' + (index + 1)"
+                :tags="summaryTags(item)"
+                :expanded="isOpen(index)"
+                @toggle="toggle(index)"
+                @delete="handleRemove(index)">
+                <el-input v-model="item.name" placeholder="分支名称，同时作为连线名称" />
+                <ConditionSlice v-model="model.data.cases[index]" :instance="$props.instance" :active-item="model" />
+              </CollapseItem>
+              <el-button link type="primary" :icon="Plus" @click="handleAdd">添加分支</el-button>
+            </div>
+          </el-form-item>
+          <el-form-item label="默认分支名称">
+            <el-input v-model="model.data.defaultName" placeholder="以上分支均未命中时走该分支" />
+          </el-form-item>
+          <el-form-item label="">
+            <tip-text>
+              节点右侧每个分支各有一个锚点，可分别连线到不同节点；移除分支时其连线一并移除
+            </tip-text>
+          </el-form-item>
+        </SectionSlice>
         <OutputSlice :data="model.data" />
       </el-form>
     </el-tab-pane>
@@ -89,10 +91,5 @@ const summaryTags = (item: any) => {
     width: 100%;
     margin-bottom: 6px;
   }
-}
-.case-tips {
-  font-size: 12px;
-  line-height: 1.8;
-  color: var(--el-text-color-placeholder);
 }
 </style>

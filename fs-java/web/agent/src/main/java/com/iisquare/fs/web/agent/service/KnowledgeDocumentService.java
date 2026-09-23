@@ -133,7 +133,9 @@ public class KnowledgeDocumentService extends JPAServiceBase {
                 markdown, knowledge.getSplitSeparator(), DPUtil.parseInt(knowledge.getSplitSegmentTokens()));
         int chunkCount = 0;
         long time = System.currentTimeMillis();
-        int segmentCount = segmentContents.size();
+        int segmentCount = 0;
+        // 检索块索引攒批到文件上传成功后再写入，避免事务回滚后残留不可用索引
+        ArrayNode sources = DPUtil.arrayNode();
         for (String segmentContent : segmentContents) {
             segmentCount++;
             KnowledgeSegment segment = KnowledgeSegment.builder()
@@ -149,7 +151,10 @@ public class KnowledgeDocumentService extends JPAServiceBase {
                     embeddingTexts.add(KnowledgeImageService.plain(chunkContent));
                 }
                 Map<String, Object> result = aiService.embeddings(knowledge.getEmbeddingModel(), embeddingTexts);
-                if (ApiUtil.failed(result)) return result;
+                if (ApiUtil.failed(result)) {
+                    TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+                    return result;
+                }
                 embeddings = ApiUtil.data(result, ObjectNode.class).at("/data");
             }
             chunkCount += chunkContents.size();
@@ -159,18 +164,16 @@ public class KnowledgeDocumentService extends JPAServiceBase {
                         .knowledgeId(segment.getKnowledgeId()).documentId(document.getId())
                         .segmentId(segment.getId()).content(chunkContents.get(index)).embedding("")
                         .createdUid(uid).createdTime(time).updatedUid(uid).updatedTime(time).status(1).build();
-                if (!embeddings.isEmpty()) {
+                if (index < embeddings.size()) {
                     chunk.setEmbedding(DPUtil.stringify(embeddings.get(index).at("/embedding")));
                 }
                 chunks.add(chunk);
             }
             chunks = chunkDao.saveAll(chunks);
-            // 同步写入 Elasticsearch，冗余文档标题和元数据
-            ArrayNode array = DPUtil.arrayNode();
+            // 组装检索块索引，冗余文档标题、元数据与文档/分段状态
             for (KnowledgeChunk chunk : chunks) {
-                array.add(chunkES.format(chunk, document));
+                sources.add(chunkES.format(chunk, segment, document));
             }
-            chunkES.add(array);
         }
         Map<String, Object> result = RpcUtil.result(fileRpc.form("/file/upload", DPUtil.buildMap(
                 "bucket", bucket, "filepath", document.getFilepath(),
@@ -182,6 +185,12 @@ public class KnowledgeDocumentService extends JPAServiceBase {
         } else {
             document.setFileId(ApiUtil.data(result, ObjectNode.class).at("/id").asText());
             document = save(documentDao, document, uid);
+        }
+        // 写入检索块索引：索引失败不影响入库结果，数据以数据库为准，可通过维护接口重建
+        List<String> indexed = chunkES.add(sources);
+        if (null == indexed || indexed.stream().anyMatch(Objects::isNull)) {
+            logger.warn("index knowledge chunk failed: knowledgeId={}, documentId={}, total={}",
+                    knowledgeId, document.getId(), sources.size());
         }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("id", document.getId());

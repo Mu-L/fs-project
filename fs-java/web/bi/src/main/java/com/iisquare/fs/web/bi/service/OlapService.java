@@ -10,6 +10,7 @@ import com.iisquare.fs.base.web.mvc.ServiceBase;
 import com.iisquare.fs.web.bi.util.SqlParserUtil;
 import com.iisquare.fs.web.bi.dao.DatasetDao;
 import com.iisquare.fs.web.bi.entity.Dataset;
+import com.iisquare.fs.web.bi.entity.DataQueryLog;
 import com.iisquare.fs.web.core.rbac.DefaultRbacService;
 import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.http.HttpServletRequest;
@@ -19,6 +20,8 @@ import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.select.Select;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -39,6 +42,8 @@ import java.util.Set;
 @Service
 public class OlapService extends ServiceBase {
 
+    private static final Logger logger = LoggerFactory.getLogger(OlapService.class);
+
     @Autowired
     TrinoService trinoService;
 
@@ -47,6 +52,9 @@ public class OlapService extends ServiceBase {
 
     @Autowired
     DatasetDao datasetDao;
+
+    @Autowired
+    DataQueryLogService dataQueryLogService;
 
     public Map<String, Object> catalogs(Map<?, ?> param) {
         ObjectNode result = DPUtil.objectNode();
@@ -179,14 +187,33 @@ public class OlapService extends ServiceBase {
         if (DPUtil.empty(sql)) {
             return ApiUtil.result(1001, "SQL不能为空", null);
         }
+        long startTime = System.currentTimeMillis();
+        sql = replaceVariables(sql, request);
+        List<Dataset> datasets = null;
+        Map<String, Object> result;
+        if (bOnlyDataset) {
+            Map<String, Object> checked = checkDataset(sql, request);
+            if (ApiUtil.failed(checked)) {
+                result = checked; // 校验失败同样记录日志，便于追溯异常的查询请求
+            } else {
+                datasets = datasets(ApiUtil.data(checked, Object.class));
+                result = execute(param, sql, datasets, response);
+            }
+        } else {
+            result = execute(param, sql, null, response);
+        }
+        recordQueryLog(param, bOnlyDataset, sql, datasets, result, System.currentTimeMillis() - startTime, request);
+        return result;
+    }
+
+    /**
+     * 执行查询：返回列定义与数据行，查询结果导出时直接写入响应流。
+     * datasets 不为空时表示数据集查询，需切换到数据集所在的 Catalog 与 Schema。
+     */
+    private Map<String, Object> execute(Map<?, ?> param, String sql, List<Dataset> datasets, HttpServletResponse response) {
         boolean explain = DPUtil.parseBoolean(param.get("explain"));
         ObjectNode result = DPUtil.objectNode();
-        sql = replaceVariables(sql, request);
         result.put("sql", sql);
-        if (bOnlyDataset) {
-            Map<String, Object> checked = checkDataset(sql, request, response);
-            if (ApiUtil.failed(checked)) return checked;
-        }
         if (explain) {
             sql = "EXPLAIN " + sql;
         }
@@ -196,17 +223,95 @@ public class OlapService extends ServiceBase {
         result.put("limit", limit);
         result.put("timeout", timeout);
         try (Connection connection = trinoService.trinoDataSource.getConnection()) {
-            if (bOnlyDataset) {
+            if (null != datasets) {
                 connection.setCatalog(TrinoService.ICEBERG_CATALOG);
                 connection.setSchema(TrinoService.DATASET_SCHEMA);
             }
             return executeQuery(result, connection, sql, limit, timeout, download, response);
         } catch (Exception e) {
-            return ApiUtil.result(1501, "查询异常", e.getMessage());
+            return ApiUtil.result(1501, "查询异常", detailOf(e));
         }
     }
 
-    public Map<String, Object> checkDataset(String sql, HttpServletRequest request, HttpServletResponse response) {
+    /**
+     * 记录数据查询日志：包含查询时间、查询用户、来源IP、请求地址、耗时与结果状态等关键信息。
+     * 日志写入失败不影响查询结果。
+     */
+    private void recordQueryLog(Map<?, ?> param, boolean bOnlyDataset, String sql, List<Dataset> datasets,
+                                Map<String, Object> result, long duration, HttpServletRequest request) {
+        try {
+            int themeId = DPUtil.parseInt(param.get("themeId")); // 数据主题场景下由调用方透传
+            String type = themeId > 0 ? DataQueryLog.TYPE_THEME
+                    : (bOnlyDataset ? DataQueryLog.TYPE_DATASET : DataQueryLog.TYPE_OLAP);
+            DataQueryLog log = dataQueryLogService.build(type, request);
+            log.setTargetId(themeId);
+            log.setTargetName(themeId > 0 ? DPUtil.parseString(param.get("themeName")) : "");
+            if (themeId < 1 && null != datasets) {
+                List<String> names = new ArrayList<>(datasets.size());
+                for (Dataset dataset : datasets) {
+                    names.add(dataset.getName());
+                }
+                log.setTargetName(DPUtil.implode(",", names));
+                if (1 == datasets.size()) log.setTargetId(datasets.get(0).getId()); // 仅引用单一数据集时记录其标识
+            }
+            log.setSqlText(sql);
+            log.setMaxRows(ValidateUtil.filterInteger(param.get("limit"), 1, 10000, 10));
+            log.setTimeout(ValidateUtil.filterInteger(param.get("timeout"), 0, 3600, 15));
+            if (null == result) { // 查询结果以文件流方式导出，响应体不包含业务数据
+                log.setStatus(1);
+                log.setResultCode(0);
+                log.setMessage("查询结果已导出");
+            } else {
+                log.setStatus(ApiUtil.failed(result) ? 2 : 1);
+                log.setResultCode(ApiUtil.code(result));
+                log.setMessage(ApiUtil.message(result));
+                Object data = ApiUtil.data(result, Object.class);
+                if (data instanceof ObjectNode node) {
+                    JsonNode rows = node.at("/rows");
+                    JsonNode columns = node.at("/columns");
+                    if (rows.isArray()) log.setRowCount((long) rows.size());
+                    if (columns.isArray()) log.setColumnCount(columns.size());
+                } else if (null != data) { // 异常原因或校验明细（如 SQL 解析失败、数据集名称异常）随返回值给出
+                    log.setDetail(data instanceof CharSequence ? data.toString() : DPUtil.stringify(data));
+                }
+            }
+            log.setDuration(duration);
+            dataQueryLogService.record(log);
+        } catch (Exception e) {
+            logger.error("记录数据查询日志失败, message: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 异常详情：按「异常消息 <- 根因消息」串联，消息为空时回退到异常类名，避免只记录笼统提示。
+     */
+    private String detailOf(Throwable throwable) {
+        StringBuilder detail = new StringBuilder();
+        Throwable current = throwable;
+        while (null != current) {
+            String message = DPUtil.trim(DPUtil.parseString(current.getMessage()));
+            if (!DPUtil.empty(message)) {
+                if (detail.length() > 0) detail.append(" <- ");
+                detail.append(message);
+            }
+            current = current.getCause();
+        }
+        if (detail.length() < 1) detail.append(throwable.getClass().getName());
+        return DPUtil.substring(detail.toString(), 0, 4000);
+    }
+
+    /**
+     * 数据集校验结果转换为数据集列表。
+     */
+    @SuppressWarnings("unchecked")
+    private List<Dataset> datasets(Object data) {
+        return data instanceof List ? (List<Dataset>) data : Collections.emptyList();
+    }
+
+    /**
+     * 校验数据集查询：解析SQL引用的数据集，校验其存在性、状态与访问权限，返回数据集列表。
+     */
+    public Map<String, Object> checkDataset(String sql, HttpServletRequest request) {
         Set<Integer> userRoleIds = rbacService.roleIds(request);
         if (DPUtil.empty(userRoleIds)) {
             return ApiUtil.result(171002, "权限不足，无授权角色", null);
@@ -219,7 +324,7 @@ public class OlapService extends ServiceBase {
             }
             names = SqlParserUtil.tableNames(statement);
         } catch (JSQLParserException e) {
-            return ApiUtil.result(171501, "SQL解析失败", e.getMessage());
+            return ApiUtil.result(171501, "SQL解析失败", detailOf(e));
         }
         List<Dataset> datasets = datasetDao.findAllByNameIn(names);
         if (datasets.isEmpty() || !DPUtil.values(datasets, String.class, "name").containsAll(names)) {
@@ -234,7 +339,7 @@ public class OlapService extends ServiceBase {
                 return ApiUtil.result(171101, "权限不足，禁止访问", dataset.getName());
             }
         }
-        return ApiUtil.result(0, null, sql);
+        return ApiUtil.result(0, null, datasets);
     }
 
     private Map<String, Object> executeQuery(ObjectNode result, Connection connection, String sql,
@@ -265,16 +370,15 @@ public class OlapService extends ServiceBase {
 
     private String replaceVariables(String sql, HttpServletRequest request) {
         if (DPUtil.empty(sql) || sql.indexOf("${") < 0) return sql;
-        Map<String, String> variables = variables(request);
+        Map<String, String> variables = variables(rbacService.identity(request));
         for (Map.Entry<String, String> entry : variables.entrySet()) {
             sql = sql.replace("${" + entry.getKey() + "}", entry.getValue());
         }
         return sql;
     }
 
-    private Map<String, String> variables(HttpServletRequest request) {
+    private Map<String, String> variables(JsonNode identity) {
         Map<String, String> variables = new LinkedHashMap<>();
-        JsonNode identity = rbacService.identity(request);
         int uid = DPUtil.parseInt(identity.at("/id").asInt(0));
         String account = DPUtil.parseString(identity.at("/serial").asText(""));
         String name = DPUtil.parseString(identity.at("/name").asText(""));
@@ -363,7 +467,7 @@ public class OlapService extends ServiceBase {
             out.flush();
             return null;
         } catch (IOException e) {
-            return ApiUtil.result(5001, "导出失败", e.getMessage());
+            return ApiUtil.result(5001, "导出失败", detailOf(e));
         }
     }
 

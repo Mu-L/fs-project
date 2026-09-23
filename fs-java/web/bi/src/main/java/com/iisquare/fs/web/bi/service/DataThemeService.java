@@ -10,11 +10,14 @@ import com.iisquare.fs.base.jpa.helper.SpecificationHelper;
 import com.iisquare.fs.base.jpa.mvc.JPAServiceBase;
 import com.iisquare.fs.web.bi.dao.DataThemeDao;
 import com.iisquare.fs.web.bi.dao.DatasetDao;
+import com.iisquare.fs.web.bi.entity.DataQueryLog;
 import com.iisquare.fs.web.bi.entity.DataTheme;
 import com.iisquare.fs.web.bi.entity.Dataset;
 import com.iisquare.fs.web.bi.mvc.Configuration;
 import com.iisquare.fs.web.core.rbac.DefaultRbacService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -27,12 +30,16 @@ import java.util.*;
 @Service
 public class DataThemeService extends JPAServiceBase {
 
+    private static final Logger logger = LoggerFactory.getLogger(DataThemeService.class);
+
     @Autowired
     DataThemeDao dataThemeDao;
     @Autowired
     DatasetDao datasetDao;
     @Autowired
     DatasetService datasetService;
+    @Autowired
+    DataQueryLogService dataQueryLogService;
     @Autowired
     DefaultRbacService rbacService;
     @Autowired
@@ -58,18 +65,49 @@ public class DataThemeService extends JPAServiceBase {
         return info(dataThemeDao, id);
     }
 
-    public Map<String, Object> info(Map<?, ?> param) {
+    /**
+     * 主题详情：包含完整主题配置，同时记录数据主题查询日志（查询时间、查询用户、来源IP等关键信息）。
+     */
+    public Map<String, Object> info(Map<?, ?> param, HttpServletRequest request) {
+        long startTime = System.currentTimeMillis();
         int id = ValidateUtil.filterInteger(param.get("id"), 1, null, 0);
         DataTheme entity = info(id);
-        if (null == entity) return ApiUtil.result(404, null, id);
-        JsonNode rows = format(DPUtil.toArrayNode(entity), DPUtil.buildMap(
-                "withUserInfo", true,
-                "withStatusText", true,
-                "withDatasetInfo", true,
-                "withRoles", true));
-        ObjectNode data = (ObjectNode) DPUtil.firstNode(rows);
-        data.replace("content", parseContent(entity.getContent()));
-        return ApiUtil.result(0, null, data);
+        Map<String, Object> result;
+        if (null == entity) {
+            result = ApiUtil.result(404, null, id);
+        } else {
+            JsonNode rows = format(DPUtil.toArrayNode(entity), DPUtil.buildMap(
+                    "withUserInfo", true,
+                    "withStatusText", true,
+                    "withDatasetInfo", true,
+                    "withRoles", true));
+            ObjectNode data = (ObjectNode) DPUtil.firstNode(rows);
+            data.replace("content", parseContent(entity.getContent()));
+            result = ApiUtil.result(0, null, data);
+        }
+        recordQueryLog(id, entity, result, System.currentTimeMillis() - startTime, request);
+        return result;
+    }
+
+    /**
+     * 记录数据主题查询日志：包含查询时间、查询用户、来源IP、耗时与结果状态等关键信息。
+     * 日志写入失败不影响查询结果。
+     */
+    private void recordQueryLog(int id, DataTheme entity, Map<String, Object> result, long duration,
+                                HttpServletRequest request) {
+        try {
+            DataQueryLog log = dataQueryLogService.build(DataQueryLog.TYPE_THEME, request);
+            log.setTargetId(id);
+            log.setTargetName(null == entity ? "" : DPUtil.parseString(entity.getName()));
+            log.setSqlText("");
+            log.setStatus(ApiUtil.failed(result) ? 2 : 1);
+            log.setResultCode(ApiUtil.code(result));
+            log.setMessage(ApiUtil.message(result));
+            log.setDuration(duration);
+            dataQueryLogService.record(log);
+        } catch (Exception e) {
+            logger.error("记录数据主题查询日志失败, id: {}, message: {}", id, e.getMessage(), e);
+        }
     }
 
     public ObjectNode search(Map<String, Object> param, Map<?, ?> args) {

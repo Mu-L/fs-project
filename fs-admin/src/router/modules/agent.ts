@@ -11,13 +11,25 @@ export const layouts = [{
     component: layout.default
   }, {
     path: '/agent/agentic/list',
-    meta: { title: '应用管理', permit: ['agent:agentic:'] },
+    meta: { title: '流程管理', permit: ['agent:agentic:'] },
     component: () => import('@/views/agent/agentic/list.vue')
-  }, {
-    path: '/agent/agentic/model',
-    meta: { title: '应用编排', fit: true, permit: ['agent:agentic:'] },
-    component: () => import('@/views/agent/agentic/model.vue')
-  }, {
+    }, {
+      path: '/agent/agentic/model',
+      meta: { title: '流程编排', fit: true, permit: ['agent:agentic:'] },
+      component: () => import('@/views/agent/agentic/model.vue')
+    }, {
+      path: '/agent/agentic/log',
+      meta: { title: '运行日志', permit: ['agent:agentic:'] },
+      component: () => import('@/views/agent/agentic/log.vue')
+    }, {
+      path: '/agent/agentic/chat',
+      meta: { title: '对话历史', permit: ['agent:agentic:'] },
+      component: () => import('@/views/agent/agentic/chat.vue')
+    }, {
+      path: '/agent/agentic/dialog',
+      meta: { title: '流程对话', fit: true, permit: ['agent:agentic:'] },
+      component: () => import('@/views/agent/agentic/dialog.vue')
+    }, {
     path: '/agent/setting/agent',
     meta: { title: '智能体管理', permit: ['agent:agent:'] },
     component: () => import('@/views/agent/setting/agent.vue')
@@ -65,6 +77,10 @@ export const layouts = [{
     path: '/agent/plugin/skillVersion',
     meta: { title: '版本管理', permit: ['agent:skill:'] },
     component: () => import('@/views/agent/plugin/skillVersion.vue')
+  }, {
+    path: '/agent/setting/state',
+    meta: { title: '运行状态', permit: ['agent:maintain:reindexChunk'] },
+    component: () => import('@/views/agent/setting/state.vue')
   }]
 }]
 

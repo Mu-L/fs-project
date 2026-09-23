@@ -309,10 +309,15 @@ const layout = () => {
   return result
 }
 
+/**
+ * 重绘画布
+ *
+ * fromJSON 内部会做适配：内容范围含渲染后的连线路径，且会等视口尺寸与连线渲染就绪，
+ * 这里不用再补延时
+ */
 const render = () => {
   cells.value = layout()
   flowRef.value?.flow?.fromJSON(cells.value)
-  setTimeout(() => flowRef.value?.flow?.fitting(), 60)
   bindEvents()
 }
 
@@ -400,33 +405,28 @@ const applyHighlight = () => {
 /**
  * 导出范围
  *
- * 以默认内容范围（节点与连线）为基准，四周再补固定边距：
- * 一是让图片留白更舒适，二是避免连线上的关系名称因为超出内容范围被裁掉。
+ * 复用画布适配的内容范围（节点 + 渲染后的连线路径），四周再补固定边距：
+ * 一是让图片留白更舒适，二是避免连线上的关系名称、绕行折线因为超出范围被裁掉。
  *
- * 注意：X6 导出（toPNG/toSVG）期望的 viewBox 是图坐标（与 getContentBBox 一致），
+ * 注意：X6 导出（toPNG/toSVG）期望的 viewBox 是图坐标（与 contentBBox 一致），
  * 不能再用 graphToLocal 转换，否则会与当前缩放/平移叠加，导致导出内容偏移或缺失。
  */
 const EXPORT_PADDING = 80
-const exportViewBox = (graph: any) => {
+const exportViewBox = () => {
   let bbox: any = null
   try {
-    bbox = graph.getContentBBox()
+    bbox = flowRef.value?.flow?.contentBBox(EXPORT_PADDING)
   } catch (e) {
     return null
   }
   if (!bbox || !bbox.width || !bbox.height) return null
-  return {
-    x: bbox.x - EXPORT_PADDING,
-    y: bbox.y - EXPORT_PADDING,
-    width: bbox.width + EXPORT_PADDING * 2,
-    height: bbox.height + EXPORT_PADDING * 2,
-  }
+  return { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }
 }
 
 const handleExportPng = () => {
   const graph = graphInstance()
   if (!graph) return
-  const viewBox = exportViewBox(graph)
+  const viewBox = exportViewBox()
   graph.toPNG((dataUri: string) => {
     const link = document.createElement('a')
     link.href = dataUri
@@ -479,6 +479,7 @@ const handleFullscreenKeydown = (event: KeyboardEvent) => {
  */
 const toggleFullscreen = () => {
   canvasFullscreen.value = !canvasFullscreen.value
+  // 视口尺寸由 ResizeObserver 写入画布，等新尺寸落进去再适配，否则还是按旧视口计算
   setTimeout(() => flowRef.value?.flow?.fitting(), 80)
 }
 

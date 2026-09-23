@@ -67,7 +67,12 @@ public class KnowledgeChunkES extends ElasticsearchBase {
         return source;
     }
 
-    public ObjectNode format(KnowledgeChunk chunk, KnowledgeDocument document) {
+    /**
+     * 组装检索块索引文档
+     * 召回过滤条件包含 status / document_status / segment_status，三个状态必须随文档一并写入，
+     * 否则新增的检索块不会被召回命中（term 查询缺失字段等价于不匹配）
+     */
+    public ObjectNode format(KnowledgeChunk chunk, KnowledgeSegment segment, KnowledgeDocument document) {
         ObjectNode source = DPUtil.objectNode();
         source.put("id", chunk.getId());
         source.put("knowledge_id", chunk.getKnowledgeId());
@@ -78,6 +83,8 @@ public class KnowledgeChunkES extends ElasticsearchBase {
         source.put("status", chunk.getStatus());
         source.put("created_time", chunk.getCreatedTime());
         source.put("updated_time", chunk.getUpdatedTime());
+        source.put("document_status", null == document ? 0 : document.getStatus());
+        source.put("segment_status", null == segment ? 0 : segment.getStatus());
         if (null != document) {
             source.put("document_title", DPUtil.parseString(document.getName()));
             source.replace("document_metadata", metadata(document.getMetadata()));

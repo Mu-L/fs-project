@@ -44,7 +44,14 @@ const handleToggle = () => {
 
 <template>
   <div class="collapse-item" :class="{ 'is-expanded': open, 'is-collapsible': caret }">
-    <div class="collapse-head" @click="handleToggle">
+    <div
+      class="collapse-head"
+      :role="caret ? 'button' : undefined"
+      :tabindex="caret ? 0 : undefined"
+      :aria-expanded="caret ? open : undefined"
+      @click="handleToggle"
+      @keydown.enter.prevent="handleToggle"
+      @keydown.space.prevent="handleToggle">
       <LayoutIcon class="caret" v-if="caret" :name="open ? 'ArrowDown' : 'ArrowRight'" />
       <span class="title" v-if="title">{{ title }}</span>
       <template v-if="!open">
@@ -62,9 +69,13 @@ const handleToggle = () => {
 <style lang="scss" scoped>
 .collapse-item {
   width: 100%;
-  padding: 8px;
+  padding: 8px 10px;
+  /* 灰色面板之上的白卡片（与全站 el-card 的用法一致：常态无描边、无阴影），
+     只有悬停与展开才用主色描边表达状态，静态时不留框线 */
+  border: solid 1px transparent;
   border-radius: 4px;
-  background: var(--el-fill-color-lighter);
+  background: var(--fs-panel-surface);
+  transition: border-color 0.2s, background-color 0.2s;
   & + .collapse-item {
     margin-top: 6px;
   }
@@ -76,18 +87,31 @@ const handleToggle = () => {
       margin-right: 4px;
     }
     .title {
-      color: var(--el-text-color-regular);
+      font-weight: 500;
+      color: var(--el-text-color-primary);
     }
     .summary {
       margin-left: 6px;
     }
     .delete {
+      flex: none;
       margin-left: auto;
+      /* 全局是 border-box，el-icon 又是固定 1em 宽：这里用 content-box 让 padding 只去和左侧内容
+         留间距，不占掉图标自身的尺寸（否则删除图标会变小） */
+      box-sizing: content-box;
+      padding-left: 6px;
       cursor: pointer;
       &:hover {
         color: var(--el-color-error);
       }
     }
+  }
+  &.is-collapsible .collapse-head {
+    cursor: pointer;
+  }
+  /* 悬停：只描边变色，保持白面干净 */
+  &.is-collapsible:hover {
+    border-color: var(--el-color-primary-light-5);
   }
   &.is-collapsible .collapse-head:hover {
     color: var(--el-color-primary);
@@ -95,11 +119,13 @@ const handleToggle = () => {
       color: var(--el-color-primary);
     }
   }
-  &.is-collapsible .collapse-head {
-    cursor: pointer;
-  }
-  &.is-expanded .collapse-head {
-    margin-bottom: 6px;
+  /* 展开：主色描边 + 极浅主色底，当前正在编辑的项一眼可辨 */
+  &.is-expanded {
+    border-color: var(--el-color-primary-light-7);
+    background: var(--el-color-primary-light-9);
+    .collapse-head {
+      margin-bottom: 6px;
+    }
   }
 }
 </style>

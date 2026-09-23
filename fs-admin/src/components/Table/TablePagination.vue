@@ -3,6 +3,7 @@
  * 表格分页组件 - 基于 el-pagination 封装，v-bind 传递分页参数，页大小改变时自动重置到第1页。
  *
  * @v-model  {PaginationState}  分页状态对象（双向绑定主值）
+ * @prop     {Boolean}          loading - 表格加载中状态，加载中时禁用分页
  *
  * @emits {Function} change - 分页变动时触发，参数：({ currentPage: number, pageSize: number })
  *
@@ -16,6 +17,7 @@ import RouteUtil from '@/utils/RouteUtil';
 import { ref } from 'vue';
 
 const model: any = defineModel()
+const loading = defineModel('loading', { type: Boolean, default: false })
 const emit = defineEmits(['change'])
 
 const lastPageSize = ref(model.value.pageSize)
@@ -32,8 +34,9 @@ const handleChange = (currentPage: number, pageSize: number) => {
   <el-pagination
     v-model:current-page="model.currentPage"
     v-model:page-size="model.pageSize"
-    @change="handleChange"
-    v-bind="model" />
+    v-bind="model"
+    :disabled="loading"
+    @change="handleChange" />
 </template>
 
 <style lang="scss" scoped>

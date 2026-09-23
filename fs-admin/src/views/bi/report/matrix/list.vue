@@ -123,7 +123,7 @@ const handleModel = (scope: any) => {
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
       </el-space>
     </div>
     <el-table
@@ -145,7 +145,7 @@ const handleModel = (scope: any) => {
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
   <el-drawer v-model="infoVisible" :title="'信息查看 - ' + form.id" size="60%">
     <layout-heading title="基础信息" />

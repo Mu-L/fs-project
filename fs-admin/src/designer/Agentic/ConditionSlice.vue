@@ -4,8 +4,10 @@
  * 每个条件默认收起，仅展示变量与运算符摘要，点击标题行展开编辑。
  *
  * @v-model  {Object} 条件对象 `{ logic: 'and'|'or', conditions: [{ variable, operator, value }] }`
+ * @prop     {Boolean} field - 条件的「变量」是列表项字段名（列表过滤用），默认 false 时用画布变量选择器
  */
 import { Plus } from '@element-plus/icons-vue'
+import { watch } from 'vue'
 import CollapseItem from './CollapseItem.vue'
 import { useCollapse } from './collapse'
 import config from './config'
@@ -16,11 +18,18 @@ const props = defineProps<{
   instance?: any,
   activeItem?: any,
   emptyText?: string,
+  field?: boolean,
 }>()
 
-// 兼容历史数据缺少条件字段的情况
-if (!Array.isArray(model.value.conditions)) model.value.conditions = []
-if (!model.value.logic) model.value.logic = 'and'
+/**
+ * 兼容历史数据缺少条件字段的情况。
+ * 用 watch 而不是 setup 里只跑一次：属性面板实例会在同类型节点之间复用，切换节点时同样要兜底。
+ */
+watch(model, (value: any) => {
+  if (!value) return
+  if (!Array.isArray(value.conditions)) value.conditions = []
+  if (!value.logic) value.logic = 'and'
+}, { immediate: true })
 
 // 仅一条条件时默认展开，多条默认收起
 const { isOpen, open, toggle, remove } = useCollapse(() => 1 === model.value.conditions.length)
@@ -52,7 +61,7 @@ const summaryTags = (condition: any) => {
   <div class="condition-slice">
     <div class="logic" v-if="model.conditions.length > 1">
       <span>满足</span>
-      <el-select v-model="model.logic" size="small">
+      <el-select v-model="model.logic">
         <el-option :key="item.value" :value="item.value" :label="item.label" v-for="item in config.logicOperators" />
       </el-select>
       <span>条件</span>
@@ -65,19 +74,24 @@ const summaryTags = (condition: any) => {
       :expanded="isOpen(index)"
       @toggle="toggle(index)"
       @delete="handleRemove(index)">
+      <!-- 列表过滤：条件针对列表里的每一项，这里填的是列表项里的字段名，不是画布变量 -->
+      <el-input
+        v-if="props.field"
+        v-model="condition.variable"
+        placeholder="字段名，如 name，支持 a.b" />
       <VariableSelect
+        v-else
         v-model="condition.variable"
         :instance="instance"
         :active-item="activeItem"
         allow-create
         placeholder="请选择变量" />
-      <el-select v-model="condition.operator" size="small" placeholder="请选择运算符">
+      <el-select v-model="condition.operator" placeholder="请选择运算符">
         <el-option :key="item.value" :value="item.value" :label="item.label" v-for="item in config.operators" />
       </el-select>
       <el-input
         v-if="needValue(condition.operator)"
         v-model="condition.value"
-        size="small"
         placeholder="请输入比较值" />
     </CollapseItem>
     <el-button link type="primary" :icon="Plus" @click="handleAdd">添加条件</el-button>

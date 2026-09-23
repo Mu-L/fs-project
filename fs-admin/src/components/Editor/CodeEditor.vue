@@ -11,7 +11,15 @@
  * @prop     {Boolean}          lineWrapping - 是否自动换行，默认 true
  * @prop     {Boolean}          resizable    - 是否允许拖拽调整高度，默认 false
  * @prop     {Boolean}          fill         - 是否铺满父容器高度，默认 false
+ * @prop     {Boolean}          bordered     - 是否显示输入框式边框，默认 true；
+ *                                              铺满容器的场景（如 SQL 编辑器）传 false，去掉边框与圆角
+ * @prop     {String}           background   - 编辑器底色，默认白色（与面板里的输入框一致）；
+ *                                              传颜色值（如 #f5f5f5）或 transparent / inherit 可覆盖
  * @prop     {Number}           fontSize     - 编辑器字号(px)，默认 0 表示继承外层（属性面板基准字号）
+ * @prop     {String}           fontFamily   - 编辑器字体，默认 monospace（代码场景）；
+ *                                              编辑散文类内容（提示词、回复内容）时传界面字体更易读
+ * @prop     {Number}           lineHeight   - 行高倍数，默认 0 表示沿用主题默认（代码场景紧凑）；
+ *                                              散文类内容传 1.5 之类更松快
  * @prop     {String}           placeholder  - 空白占位提示文字
  * @prop     {HintItem[]}       hints        - 自定义自动提示列表
  * @prop     {String}           trigger      - 唤起提示的触发字符，如 '/'；输入该字符时抛出 trigger 事件，由调用方决定提示形态
@@ -65,7 +73,7 @@ import 'codemirror/addon/fold/comment-fold.js'
 
 import 'codemirror/mode/javascript/javascript'
 import 'codemirror/mode/sql/sql'
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const model: any = defineModel()
 const emit = defineEmits(['trigger'])
@@ -78,7 +86,11 @@ const {
   lineWrapping = true,
   resizable = false,
   fill = false,
+  bordered = true,
+  background = '',
   fontSize = 0,
+  fontFamily = '',
+  lineHeight = 0,
   placeholder = '',
   hints = [],
   trigger = '',
@@ -92,7 +104,11 @@ const {
   lineWrapping: { type: Boolean, required: false },
   resizable: { type: Boolean, required: false },
   fill: { type: Boolean, required: false },
+  bordered: { type: Boolean, required: false },
+  background: { type: String, required: false },
   fontSize: { type: Number, required: false },
+  fontFamily: { type: String, required: false },
+  lineHeight: { type: Number, required: false },
   placeholder: { type: String, required: false },
   hints: { type: Array<Object>, required: false },
   trigger: { type: String, required: false },
@@ -110,6 +126,12 @@ let editor: any = null
 // CodeMirror 不会自动感知尺寸变化，需触发 refresh() 重绘，否则内容不显示
 let resizeObserver: any = null
 const currentHeight = ref(height)
+/** 编辑器字体：默认等宽（代码场景），变量编辑器等散文场景由调用方传入界面字体 */
+const editorFont = computed(() => fontFamily || 'monospace')
+/** 行高：未传时沿用主题默认，传入倍数（如 1.5）用于散文类内容 */
+const editorLineHeight = computed(() => (lineHeight ? String(lineHeight) : 'normal'))
+/** 编辑器底色：默认白面（与面板里的输入框一致），可由调用方覆盖或设为 transparent 融进容器 */
+const editorBackground = computed(() => background || 'var(--fs-panel-surface)')
 let isResizing = false
 let startY = 0
 let startHeight = 0
@@ -288,6 +310,10 @@ const hintRender = (elt: any, data: any, cur: any) => {
   elt.appendChild(wrapper)
 }
 const load = () => {
+  // 只有真正需要时才保留 gutter，避免 lineNumbers 关闭时左侧留一条空灰条
+  const gutters: string[] = []
+  if (lineNumbers) gutters.push('CodeMirror-linenumbers')
+  if (foldGutter) gutters.push('CodeMirror-foldgutter')
   editor = CodeMirror(editorRef.value, {
     value: model.value || '',
     mode: mode,
@@ -300,7 +326,7 @@ const load = () => {
       completeSingle: false,
       hint: handleHint
     },
-    gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+    gutters: gutters,
   })
   editor.setSize('auto', fill ? '100%' : currentHeight.value + 'px')
   editor.setOption('extraKeys', buildExtraKeys())
@@ -350,7 +376,13 @@ defineExpose({
   <div
     ref="editorRef"
     class="fs-code-editor"
-    :class="[{ 'fs-code-editor--resizable': resizable, 'fs-code-editor--fill': fill }]"
+    :class="[
+      {
+        'fs-code-editor--resizable': resizable,
+        'fs-code-editor--fill': fill,
+        'fs-code-editor--bordered': bordered,
+      },
+    ]"
     :style="fontSize ? { fontSize: fontSize + 'px' } : undefined">
     <div v-if="resizable" class="fs-code-editor__resize-handle" @mousedown="onResizeMouseDown" />
   </div>
@@ -384,15 +416,83 @@ defineExpose({
     background: transparent;
     z-index: 10;
 
-    &:hover,
-    &:active {
-      background: var(--el-color-primary, #409eff);
-      opacity: 0.3;
+    /* 可见的抓握提示：整条 8px 仍是拖拽热区，只在中间画一小节提示条 */
+    &::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 34px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--el-border-color);
+      transform: translate(-50%, -50%);
+      transition: background-color 0.2s, width 0.2s;
+    }
+    &:hover::after,
+    &:active::after {
+      width: 48px;
+      background: var(--el-color-primary);
     }
   }
 
+  /**
+   * 编辑器外观对齐面板里的输入框：白面 + 内边距 + 界面字体。
+   * 主题（base16-light）自带的 #f5f5f5 灰底与页面里的灰块同族，这里统一成输入框的白面。
+   */
   :deep(.CodeMirror) {
     height: auto;
+    box-sizing: border-box;
+    padding: 0;
+    background: v-bind(editorBackground);
+    color: var(--el-text-color-primary);
+    font-family: v-bind(editorFont);
+    line-height: v-bind(editorLineHeight);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  /* 默认带边框：1px 描边 + 圆角，聚焦时主色描边与浅色外圈 */
+  &--bordered :deep(.CodeMirror) {
+    border: solid 1px var(--el-border-color);
+    border-radius: 4px;
+    &:hover {
+      border-color: var(--el-border-color-dark);
+    }
+    &.CodeMirror-focused {
+      border-color: var(--el-color-primary);
+      box-shadow: 0 0 0 2px var(--el-color-primary-light-9);
+    }
+  }
+  /* 不要边框时（如 SQL 编辑器铺满容器）连聚焦描边也一并去掉：
+     这类编辑器本身就是整块编辑区，光标即焦点提示，不再画蓝色边框 */
+  :deep(.CodeMirror-lines) {
+    /* 文字不再贴边，留出与输入框一致的内边距 */
+    padding: 8px 10px;
+  }
+  :deep(.CodeMirror-gutters) {
+    border-right: none;
+    background: transparent;
+  }
+  /* 行号列默认 min-width: 20px，只有个位数行号时左侧会空出一大块；改为按行号内容自适应 */
+  :deep(.CodeMirror-linenumber) {
+    min-width: 0;
+  }
+  /* 编辑器内部滚动条：细样式，与面板滚动条一致 */
+  :deep(.CodeMirror-vscrollbar),
+  :deep(.CodeMirror-hscrollbar) {
+    &::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    &::-webkit-scrollbar-thumb {
+      border-radius: 4px;
+      background: var(--el-border-color);
+      &:hover {
+        background: var(--el-border-color-dark);
+      }
+    }
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
   }
 
   :deep(.CodeMirror-placeholder) {

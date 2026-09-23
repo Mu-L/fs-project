@@ -9,15 +9,39 @@ import com.iisquare.fs.base.core.util.ValidateUtil;
 import com.iisquare.fs.base.jpa.helper.SpecificationHelper;
 import com.iisquare.fs.base.jpa.mvc.JPAServiceBase;
 import com.iisquare.fs.web.agent.dao.AgenticDao;
+import com.iisquare.fs.web.agent.dao.AgenticLogDao;
+import com.iisquare.fs.web.agent.dao.ChatDao;
+import com.iisquare.fs.web.agent.dao.ChatDialogDao;
 import com.iisquare.fs.web.agent.entity.Agentic;
+import com.iisquare.fs.web.agent.entity.AgenticLog;
+import com.iisquare.fs.web.agent.entity.Chat;
+import com.iisquare.fs.web.agent.entity.ChatDialog;
+import com.iisquare.fs.web.agent.entity.Tool;
+import com.iisquare.fs.web.agent.entity.ToolMethod;
 import com.iisquare.fs.web.agent.mvc.Configuration;
+import com.iisquare.fs.web.agent.runner.ChartNodeHandler;
 import com.iisquare.fs.web.core.rbac.DefaultRbacService;
+import com.iisquare.fs.web.core.rpc.FileRpc;
+import com.iisquare.fs.base.web.sse.SsePlainEmitter;
+import com.iisquare.fs.base.web.util.RpcUtil;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.text.SimpleDateFormat;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * 智能体编排服务。
@@ -29,6 +53,8 @@ import java.util.*;
 @Service
 public class AgenticService extends JPAServiceBase {
 
+    private static final Logger logger = LoggerFactory.getLogger(AgenticService.class);
+
     public static final String MODE_WORKFLOW = "workflow";
     public static final String MODE_CHAT = "chat";
 
@@ -38,6 +64,51 @@ public class AgenticService extends JPAServiceBase {
     DefaultRbacService rbacService;
     @Autowired
     Configuration configuration;
+    @Autowired
+    ToolService toolService;
+    @Autowired
+    ToolMethodService toolMethodService;
+    @Autowired
+    AgenticRunner agenticRunner;
+    @Autowired
+    AgenticLogDao agenticLogDao;
+    @Autowired
+    ChatDao chatDao;
+    @Autowired
+    ChatDialogDao chatDialogDao;
+    @Autowired
+    FileRpc fileRpc;
+    @Autowired
+    KnowledgeService knowledgeService;
+
+    /** 编排调试上传的文件桶：与知识库共用文件服务存储，路径按 agentic 前缀隔离 */
+    public static final String BUCKET = "fs-lm-knowledge";
+
+    /**
+     * 调试运行的文件上传：走文件服务存储，返回文件标识、原始名称、类型、后缀与大小，
+     * 直接对应开始节点 files 数组的元素结构（文件存储服务返回的文件信息）
+     */
+    public Map<String, Object> upload(MultipartFile file, HttpServletRequest request) {
+        if (null == file || file.isEmpty()) return ApiUtil.result(1001, "获取文件句柄失败", null);
+        String filename = DPUtil.parseString(file.getOriginalFilename());
+        int at = filename.lastIndexOf('.');
+        String suffix = at < 0 ? "" : filename.substring(at + 1);
+        String date = new SimpleDateFormat("yyyyMMdd").format(new Date());
+        String filepath = String.format("agentic/%s/%s%s", date,
+                UUID.randomUUID().toString().replace("-", ""), DPUtil.empty(suffix) ? "" : "." + suffix);
+        Map<String, Object> result = RpcUtil.result(fileRpc.form("/file/upload", DPUtil.buildMap(
+                "bucket", BUCKET, "filepath", filepath, "traceIdentity", "fs-agent-agentic-debug"), file));
+        if (ApiUtil.failed(result)) return result;
+        JsonNode data = ApiUtil.data(result, ObjectNode.class);
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", data.at("/id").asText(""));
+        item.put("name", data.at("/name").asText(filename));
+        item.put("type", data.at("/type").asText(""));
+        item.put("suffix", data.at("/suffix").asText(suffix));
+        item.put("size", data.at("/size").asLong(0));
+        item.put("filepath", filepath);
+        return ApiUtil.result(0, null, item);
+    }
 
     @Override
     public Map<String, String> sorts() {
@@ -66,6 +137,84 @@ public class AgenticService extends JPAServiceBase {
         return info(agenticDao, id);
     }
 
+    /** 调用人的角色标识集合（授权角色校验用） */
+    /**
+     * 删除状态筛选（与前端 form-deleted 组件一致）：`only` 只看已删除、`without` 只看未删除、其余为全部
+     */
+    protected void addDeleted(List<jakarta.persistence.criteria.Predicate> predicates,
+                              jakarta.persistence.criteria.Root<?> root, jakarta.persistence.criteria.CriteriaBuilder cb,
+                              Map<?, ?> param) {
+        String value = DPUtil.parseString(param.get("deleted"));
+        if ("only".equals(value)) {
+            predicates.add(cb.greaterThan(root.get("deletedTime"), 0L));
+        } else if ("without".equals(value)) {
+            predicates.add(cb.equal(root.get("deletedTime"), 0L));
+        }
+    }
+
+    protected Set<Integer> roleIds(HttpServletRequest request) {
+        JsonNode identity = rbacService.identity(request);
+        return DPUtil.values(identity.at("/roles"), Integer.class, "id");
+    }
+
+    /**
+     * 编排应用的授权角色校验：没有配置授权角色时所有登录用户可用；
+     * 配置后要求调用人的角色与之有交集，否则拒绝运行/调用
+     */
+    public boolean authorized(Agentic info, HttpServletRequest request) {
+        if (null == info) return false;
+        Set<Integer> allowed = new LinkedHashSet<>(DPUtil.parseIntList(info.getRoleIds()));
+        if (allowed.isEmpty()) return true;
+        return !Collections.disjoint(allowed, roleIds(request));
+    }
+
+    /**
+     * 发布内容里开始节点的输入配置：对话页新建会话时按它渲染参数表单。
+     * 取的是发布内容（外部调用实际执行的那一份），草稿怎么改都不影响线上对话的参数口径。
+     */
+    protected ObjectNode publishedStart(Agentic info) {
+        JsonNode content = DPUtil.parseJSON(DPUtil.parseString(info.getPublishedContent()));
+        if (null == content || !content.isObject()) return DPUtil.objectNode();
+        for (JsonNode cell : content.at("/cells")) {
+            if (!"Start".equals(cell.at("/data/type").asText(""))) continue;
+            JsonNode data = cell.at("/data");
+            return data.isObject() ? data.deepCopy() : DPUtil.objectNode();
+        }
+        return DPUtil.objectNode();
+    }
+
+    /**
+     * 用户对话页可用的编排应用：已发布、状态启用、且授权角色命中当前用户；
+     * 只返回对话所需的基础信息，不含画布内容
+     */
+    public Map<String, Object> authorized(HttpServletRequest request) {
+        Set<Integer> mine = roleIds(request);
+        List<Agentic> rows = agenticDao.findAll((root, query, cb) -> cb.and(
+                cb.equal(root.get("status"), 1),
+                cb.greaterThan(root.get("publishedVersion"), 0)), Sort.by(Sort.Order.desc("sort"), Sort.Order.desc("id")));
+        ArrayNode items = DPUtil.arrayNode();
+        for (Agentic info : rows) {
+            Set<Integer> allowed = new LinkedHashSet<>(DPUtil.parseIntList(info.getRoleIds()));
+            if (!allowed.isEmpty() && Collections.disjoint(allowed, mine)) continue;
+            ObjectNode item = items.addObject();
+            item.put("id", info.getId());
+            item.put("name", DPUtil.parseString(info.getName()));
+            item.put("mode", DPUtil.parseString(info.getMode()));
+            item.put("modeText", modes().get(info.getMode()));
+            item.put("icon", DPUtil.parseString(info.getIcon()));
+            // 对话页参数表单：给出「发布内容」里的开始节点输入配置（含自定义参数），
+            // 前端不必再拉草稿，避免按草稿渲染参数、与线上实际执行的口径不一致
+            item.set("start", publishedStart(info));
+            item.put("description", DPUtil.parseString(info.getDescription()));
+            item.set("tags", parseArray(info.getTags()));
+            item.put("publishedVersion", null == info.getPublishedVersion() ? 0 : info.getPublishedVersion());
+            item.set("roleIds", DPUtil.toJSON(DPUtil.parseIntList(info.getRoleIds())));
+        }
+        ObjectNode result = DPUtil.objectNode();
+        result.set("rows", items);
+        return ApiUtil.result(0, null, result);
+    }
+
     /**
      * 编排详情：设计器使用，返回草稿内容与发布状态，不返回发布内容
      */
@@ -79,6 +228,8 @@ public class AgenticService extends JPAServiceBase {
         node.put("modeText", modes().get(info.getMode()));
         node.put("icon", info.getIcon());
         node.set("tags", parseArray(info.getTags()));
+        // 授权角色：以数组返回，供设计器里的角色多选回显
+        node.set("roleIds", DPUtil.toJSON(DPUtil.parseIntList(info.getRoleIds())));
         node.put("status", info.getStatus());
         node.put("statusText", status().get(info.getStatus()));
         node.set("content", parseObject(info.getContent()));
@@ -116,6 +267,7 @@ public class AgenticService extends JPAServiceBase {
             info = new Agentic();
             // 新增时显式赋初值：@DynamicInsert 会省略 null 字段，text/longtext 列在 MySQL 中没有默认值
             info.setTags("[]");
+            info.setRoleIds("");
             info.setContent("");
             info.setDescription("");
             info.setPublishedContent(""); // 未发布
@@ -127,6 +279,8 @@ public class AgenticService extends JPAServiceBase {
         info.setMode(mode);
         info.setIcon(DPUtil.parseString(param.get("icon")));
         if (null != param.get("tags")) info.setTags(DPUtil.stringify(parseArray(param.get("tags"))));
+        // 授权角色：为空表示所有登录用户可用（逗号分隔存储，与知识库等模块保持一致）
+        if (null != param.get("roleIds")) info.setRoleIds(DPUtil.implode(",", DPUtil.parseIntList(param.get("roleIds"))));
         // 保存的内容为草稿，仅用于调试运行；外部调用使用发布内容
         if (null != param.get("content")) info.setContent(DPUtil.stringify(param.get("content")));
         info.setSort(DPUtil.parseInt(param.get("sort")));
@@ -146,7 +300,14 @@ public class AgenticService extends JPAServiceBase {
         Agentic info = info(id);
         if (null == info) return ApiUtil.result(404, null, id);
         if (DPUtil.empty(info.getContent())) return ApiUtil.result(1002, "编排内容为空，无法发布", id);
-        info.setPublishedContent(info.getContent());
+        JsonNode content = DPUtil.parseJSON(DPUtil.parseString(info.getContent()));
+        if (null == content || !content.isObject()) return ApiUtil.result(1002, "编排内容无效，无法发布", id);
+        // 工具引用校验 + 方法定义快照：发布内容自洽，工具后续变动不影响已发布编排
+        List<String> errors = new ArrayList<>();
+        JsonNode published = content.deepCopy();
+        bindToolMethods(published, errors);
+        if (!errors.isEmpty()) return ApiUtil.result(1003, DPUtil.implode("；", errors), errors);
+        info.setPublishedContent(DPUtil.stringify(published));
         info.setPublishedVersion((null == info.getPublishedVersion() ? 0 : info.getPublishedVersion()) + 1);
         info.setPublishedTime(System.currentTimeMillis());
         info.setPublishedUid(rbacService.uid(request));
@@ -155,21 +316,300 @@ public class AgenticService extends JPAServiceBase {
     }
 
     /**
-     * 调试运行：使用草稿内容，执行引擎接入前先返回校验后的运行计划
+     * 发布时的工具方法处理：LLM 节点引用的工具方法需存在、未失效、未停用，执行变量绑定要有取值；
+     * 校验通过后把方法定义（名称 / 描述 / 参数 / 调用信息）快照进发布内容，供运行时直接使用
      */
+    protected void bindToolMethods(JsonNode content, List<String> errors) {
+        for (JsonNode cell : content.at("/cells")) {
+            JsonNode data = cell.at("/data");
+            if (!"LLM".equals(data.at("/type").asText())) continue;
+            // 策略为「无」时不携带工具，配置的工具引用不参与运行，也无需校验
+            if ("none".equalsIgnoreCase(data.at("/agentStrategy").asText("none"))) continue;
+            for (JsonNode row : data.at("/tools")) {
+                if (row.at("/enabled").isBoolean() && !row.at("/enabled").asBoolean()) continue;
+                // 内置工具：知识库与编排应用同样按 function calling 暴露给模型
+                String toolKind = row.at("/kind").asText("method");
+                if ("knowledge".equals(toolKind) || "agentic".equals(toolKind)
+                        || "theme".equals(toolKind) || "ontology".equals(toolKind)) {
+                    boolean knowledge = "knowledge".equals(toolKind);
+                    boolean theme = "theme".equals(toolKind);
+                    boolean ontology = "ontology".equals(toolKind);
+                    String label = knowledge ? "知识库" : (theme ? "数据主题" : (ontology ? "本体" : "编排应用"));
+                    if (DPUtil.empty(row.at("/name").asText(""))) {
+                        errors.add("存在未配置函数名的" + label + "工具");
+                        continue;
+                    }
+                    if (knowledge) {
+                        int knowledgeId = row.at("/knowledgeId").asInt(0);
+                        if (knowledgeId < 1) errors.add("存在未选择知识库的工具");
+                        else if (null == knowledgeService.info(knowledgeId)) errors.add("知识库不存在（ID：" + knowledgeId + "）");
+                    } else if (theme) {
+                        if (row.at("/themeId").asInt(0) < 1) errors.add("存在未选择数据主题的工具");
+                    } else if (ontology) {
+                        if (row.at("/ontologyId").asInt(0) < 1) errors.add("存在未选择本体的工具");
+                    } else {
+                        int agenticId = row.at("/agenticId").asInt(0);
+                        Agentic target = agenticId < 1 ? null : info(agenticId);
+                        if (agenticId < 1) errors.add("存在未选择编排应用的工具");
+                        else if (null == target) errors.add("编排应用不存在（ID：" + agenticId + "）");
+                        else if (null == target.getPublishedVersion() || target.getPublishedVersion() < 1) {
+                            errors.add("编排工具引用的应用尚未发布：" + target.getName());
+                        }
+                    }
+                    continue;
+                }
+                int toolId = row.at("/toolId").asInt(0);
+                String methodName = row.at("/method").asText("");
+                if (toolId < 1 || DPUtil.empty(methodName)) {
+                    errors.add("存在未选择完整的工具引用，请重新选择工具与方法");
+                    continue;
+                }
+                Tool tool = toolService.info(toolId);
+                if (null == tool) {
+                    errors.add("工具不存在（ID：" + toolId + "）");
+                    continue;
+                }
+                if (1 != (null == tool.getStatus() ? 0 : tool.getStatus())) {
+                    errors.add("工具已停用：" + tool.getName());
+                    continue;
+                }
+                ToolMethod method = null;
+                for (ToolMethod item : toolMethodService.all(toolId)) {
+                    if (methodName.equals(item.getName())) {
+                        method = item;
+                        break;
+                    }
+                }
+                String label = tool.getName() + "." + methodName;
+                if (null == method) {
+                    errors.add("方法不存在：" + label);
+                    continue;
+                }
+                if (1 != (null == method.getPresent() ? 1 : method.getPresent())) {
+                    errors.add("方法已失效：" + label);
+                    continue;
+                }
+                if (1 != (null == method.getStatus() ? 1 : method.getStatus())) {
+                    errors.add("方法已停用：" + label);
+                    continue;
+                }
+                // 执行变量绑定：来源为引用变量或固定值时必须有取值
+                JsonNode args = row.at("/args");
+                for (Map<String, Object> parameter : toolMethodService.methodParams(method)) {
+                    String name = DPUtil.parseString(parameter.get("name"));
+                    Map<String, Object> properties = schemaProperties(parameter);
+                    if (!properties.isEmpty()) {
+                        // 对象参数（如 body）按字段绑定：未配置的字段依旧由模型决定
+                        JsonNode fields = args.at("/" + name).at("/fields");
+                        for (String field : properties.keySet()) {
+                            validateBinding(label + "." + name + "." + field, fields.at("/" + field), errors);
+                        }
+                        continue;
+                    }
+                    validateBinding(label + "." + name, args.at("/" + name), errors);
+                }
+                ((ObjectNode) row).put("methodTitle", DPUtil.parseString(method.getTitle()));
+                ((ObjectNode) row).put("methodOriginName", DPUtil.parseString(method.getOriginName()));
+                ((ObjectNode) row).put("methodDescription", DPUtil.parseString(method.getDescription()));
+                ((ObjectNode) row).set("methodParams", DPUtil.toJSON(toolMethodService.methodParams(method)));
+                ((ObjectNode) row).set("methodInvoke", DPUtil.toJSON(toolMethodService.methodInvoke(method)));
+                // 工具级调用配置一并快照：运行时按快照发起调用，不受工具后续改动影响
+                ((ObjectNode) row).put("toolType", DPUtil.parseString(tool.getType()));
+                ((ObjectNode) row).put("toolUrl", DPUtil.parseString(tool.getUrl()));
+                ((ObjectNode) row).put("toolHeader", DPUtil.parseString(tool.getHeader()));
+                ((ObjectNode) row).put("toolQuery", DPUtil.parseString(tool.getQuery()));
+                ((ObjectNode) row).put("toolContent", DPUtil.parseString(tool.getContent()));
+            }
+        }
+    }
+
+    /** 参数的结构化字段：对象参数（schema.properties）按字段绑定执行变量 */
+    protected Map<String, Object> schemaProperties(Map<String, Object> parameter) {
+        Object schema = parameter.get("schema");
+        if (!(schema instanceof Map)) return new LinkedHashMap<>();
+        Object properties = ((Map<?, ?>) schema).get("properties");
+        if (!(properties instanceof Map)) return new LinkedHashMap<>();
+        Map<String, Object> result = DPUtil.toJSON(properties, Map.class);
+        return null == result ? new LinkedHashMap<>() : result;
+    }
+
+    /**
+     * 执行变量绑定校验：`auto=false` 时必须填写内容（内容里可以混排固定字符串与变量占位符，由运行时解析）；
+     * 兼容早期数据里的 `source` 写法（model / variable / constant）
+     */
+    protected void validateBinding(String label, JsonNode binding, List<String> errors) {
+        if (binding.has("auto")) {
+            if (!binding.at("/auto").asBoolean(true) && DPUtil.empty(binding.at("/value").asText(""))) {
+                errors.add("执行变量未填写内容：" + label);
+            }
+            return;
+        }
+        String source = binding.at("/source").asText("model");
+        if ("variable".equals(source) && DPUtil.empty(binding.at("/variable").asText(""))) {
+            errors.add("执行变量未选择变量：" + label);
+        } else if ("constant".equals(source) && DPUtil.empty(binding.at("/value").asText(""))) {
+            errors.add("执行变量未填写固定值：" + label);
+        }
+    }
+
+    /**
+     * 调试运行：执行草稿内容，返回运行结果（回复内容、各节点输出、执行步骤）并记录运行日志
+     */
+    /**
+     * 运行前准备：注入「编排工具」的调用器（把另一个编排应用当工具调用），
+     * 用回调注入而不是让运行时反向依赖本服务
+     */
+    protected void prepareRuntime(Integer uid, HttpServletRequest request) {
+        agenticRunner.agenticInvoker((agenticId, query) -> toolInvoke(agenticId, query, uid, request));
+    }
+
+    /**
+     * 编排作为工具：以 query 作为开始节点入参调用另一个编排应用的发布内容。
+     * 子编排不写会话与运行日志，避免污染调用方的对话记录。
+     */
+    public ObjectNode toolInvoke(Integer agenticId, String query, Integer uid, HttpServletRequest request) {
+        Agentic info = null == agenticId || agenticId < 1 ? null : info(agenticId);
+        if (null == info) throw new IllegalStateException("编排应用不存在：" + agenticId);
+        int version = null == info.getPublishedVersion() ? 0 : info.getPublishedVersion();
+        if (version < 1 || DPUtil.empty(info.getPublishedContent())) {
+            throw new IllegalStateException("编排应用尚未发布：" + info.getName());
+        }
+        JsonNode content = DPUtil.parseJSON(DPUtil.parseString(info.getPublishedContent()));
+        if (null == content || !content.isObject()) {
+            throw new IllegalStateException("编排应用发布内容无效：" + info.getName());
+        }
+        ObjectNode inputs = DPUtil.objectNode();
+        inputs.put("query", DPUtil.parseString(query));
+        // 子编排同样要能继续使用「编排工具」（嵌套调用），并临时关闭流式输出：
+        // 子编排的输出作为工具结果返回给外层模型，不应混进外层对话的气泡
+        prepareRuntime(uid, request);
+        Consumer<JsonNode> sink = agenticRunner.streamSink();
+        // 子编排的节点状态同样不推给外层画布（外层只展示自己这一层的执行过程）
+        Consumer<JsonNode> stepSink = agenticRunner.stepSink();
+        // 子编排的 ReAct 轮次同样不推给外层（否则外层的执行过程里会混进子流程的轮次）
+        Consumer<JsonNode> roundSink = agenticRunner.roundSink();
+        agenticRunner.streamSink(null);
+        agenticRunner.stepSink(null);
+        agenticRunner.roundSink(null);
+        ObjectNode result;
+        try {
+            result = agenticRunner.execute(content, inputs, DPUtil.arrayNode(), system(info, null, uid, request));
+        } finally {
+            agenticRunner.streamSink(sink);
+            agenticRunner.stepSink(stepSink);
+            agenticRunner.roundSink(roundSink);
+        }
+        ObjectNode value = DPUtil.objectNode();
+        value.put("answer", result.at("/answer").asText(""));
+        value.put("status", result.at("/status").asInt(1));
+        value.put("error", result.at("/error").asText(""));
+        return value;
+    }
+
+    /**
+     * 流式调试运行：模型节点的增量内容实时推送（SSE），结束后推送运行结果。
+     * 事件格式：`{ type: delta|step|done|error, data: ... }`
+     */
+    public SseEmitter runStream(Map<?, ?> param, HttpServletRequest request, HttpServletResponse response) {
+        return stream(param, request, response, false);
+    }
+
+    /**
+     * 流式外部调用：与调试运行同一套事件，只是执行的是发布内容（用户对话页使用）
+     */
+    public SseEmitter invokeStream(Map<?, ?> param, HttpServletRequest request, HttpServletResponse response) {
+        return stream(param, request, response, true);
+    }
+
+    /** 流式运行（SSE）：published=false 走草稿调试运行，true 走发布内容的外部调用 */
+    protected SseEmitter stream(Map<?, ?> param, HttpServletRequest request, HttpServletResponse response,
+                                boolean published) {
+        // 异步线程内沿用请求上下文：FeignInterceptor 从「当前请求」透传 x-auth-token 等身份头，
+        // BI 侧（数据主题 / 数据集查询）据此替换与登录用户相关的变量
+        ServletRequestAttributes attributes = new ServletRequestAttributes(request, response);
+        SsePlainEmitter emitter = new SsePlainEmitter(request, response, 0L);
+        return emitter.async(() -> {
+            RequestContextHolder.setRequestAttributes(attributes);
+            // 注意：流式回调必须在执行线程上设置（运行时按线程保存），否则增量推不出去
+            agenticRunner.streamSink(chunk -> emitter.data(DPUtil.stringify(streamMessage("delta", chunk))));
+            // 节点执行进度同样实时推送：前端把流程图上的节点与连线按执行状态着色
+            agenticRunner.stepSink(step -> emitter.data(DPUtil.stringify(streamMessage("step", step))));
+            // ReAct 轮次进度：每轮模型推理与每次工具调用实时推送，前端据此展示执行过程
+            agenticRunner.roundSink(round -> emitter.data(DPUtil.stringify(streamMessage("round", round))));
+            try {
+                Map<String, Object> data = published ? invoke(param, request) : run(param, request);
+                // 业务失败（授权被撤销、缺少必填参数、未发布等）在 run/invoke 里是正常返回的错误码，
+                // 流式通道必须按错误事件下发，否则前端会当成运行成功、只留一个空的回复气泡
+                if (ApiUtil.failed(data)) {
+                    ObjectNode error = DPUtil.objectNode();
+                    error.put("code", DPUtil.parseInt(data.get(ApiUtil.FIELD_CODE)));
+                    error.put("message", DPUtil.parseString(data.get(ApiUtil.FIELD_MSG)));
+                    emitter.data(DPUtil.stringify(streamMessage("error", error)));
+                } else {
+                    emitter.data(DPUtil.stringify(streamMessage("done", data)));
+                }
+            } catch (Exception e) {
+                ObjectNode error = DPUtil.objectNode();
+                error.put("code", 500);
+                error.put("message", DPUtil.parseString(e.getMessage()));
+                emitter.data(DPUtil.stringify(streamMessage("error", error)));
+            } finally {
+                agenticRunner.streamSink(null);
+                agenticRunner.stepSink(null);
+                agenticRunner.roundSink(null);
+                RequestContextHolder.resetRequestAttributes();
+            }
+        });
+    }
+
+    /** 流式事件体：type + data，前端按 type 分发 */
+    protected ObjectNode streamMessage(String type, Object data) {
+        ObjectNode message = DPUtil.objectNode();
+        message.put("type", type);
+        message.set("data", DPUtil.toJSON(data));
+        return message;
+    }
+
     public Map<String, Object> run(Map<?, ?> param, HttpServletRequest request) {
         int id = ValidateUtil.filterInteger(param.get("id"), 1, null, 0);
         Agentic info = id > 0 ? info(id) : null;
         if (null == info) return ApiUtil.result(404, null, id);
+        // 授权角色：配置了授权角色时按调用人的角色放行
+        if (!authorized(info, request)) return ApiUtil.result(9403, "无权限使用该编排应用：" + info.getName(), id);
         JsonNode content = DPUtil.parseJSON(DPUtil.parseString(info.getContent()));
         if (null == content || !content.isObject()) return ApiUtil.result(1001, "编排内容为空，请先保存", id);
-        ObjectNode result = DPUtil.objectNode();
+        ObjectNode inputs = parseObject(param.get("inputs"));
+        Integer uid = rbacService.uid(request);
+        // 多轮对话：调试运行与发布应用的会话分开存，草稿用 agentic_draft
+        String query = query(inputs);
+        Integer chatId = DPUtil.parseInt(param.get("chatId"));
+        // 仅新建会话时校验必填参数：继续对话的入参已随会话带入，不再重复要求
+        if (isNewChat(chatId)) {
+            String absent = missingInputs(content, inputs);
+            if (!DPUtil.empty(absent)) return ApiUtil.result(1004, "缺少必填参数：" + absent, absent);
+        }
+        Chat chat = resolveChat(chatId, CHAT_DRAFT, query, uid);
+        prepareRuntime(uid, request);
+        long begin = System.currentTimeMillis();
+        ObjectNode result;
+        try {
+            result = agenticRunner.execute(content, inputs, history(chat.getId()), system(info, chat, uid, request));
+        } catch (Exception e) {
+            return failureResult(info, chat.getId(), "draft", 0, inputs, e, System.currentTimeMillis() - begin, uid, request);
+        }
         result.put("id", info.getId());
         result.put("name", info.getName());
         result.put("mode", info.getMode());
         result.put("source", "draft"); // 调试运行使用保存后的草稿内容
-        result.set("inputs", null == param.get("inputs") ? DPUtil.objectNode() : parseObject(param.get("inputs")));
-        result.set("plan", plan(content));
+        result.set("inputs", inputs);
+        result.put("chatId", chat.getId());
+        ChatDialog question = appendDialog(chat, "user", DPUtil.empty(query) ? DPUtil.stringify(inputs) : query, "", "", uid);
+        ChatDialog reply = appendDialog(chat, "assistant", result.at("/answer").asText(""), reasoning(result), reference(result), uid);
+        // 消息标识回传前端，调试面板可直接对本轮回复做反馈
+        result.put("questionId", null == question ? 0 : question.getId());
+        result.put("answerId", null == reply ? 0 : reply.getId());
+        AgenticLog log = writeLog(info, chat.getId(), "draft", 0, inputs, result, uid, request);
+        result.put("logId", null == log ? 0 : log.getId());
         return ApiUtil.result(0, null, result);
     }
 
@@ -184,15 +624,672 @@ public class AgenticService extends JPAServiceBase {
         if (version < 1 || DPUtil.empty(info.getPublishedContent())) {
             return ApiUtil.result(1002, "编排尚未发布，外部调用不可用", id);
         }
-        ObjectNode result = DPUtil.objectNode();
+        // 授权角色：配置了授权角色时按调用人的角色放行
+        if (!authorized(info, request)) return ApiUtil.result(9403, "无权限使用该编排应用：" + info.getName(), id);
+        JsonNode content = DPUtil.parseJSON(DPUtil.parseString(info.getPublishedContent()));
+        if (null == content || !content.isObject()) return ApiUtil.result(1002, "发布内容无效，请重新发布", id);
+        ObjectNode inputs = parseObject(param.get("inputs"));
+        Integer uid = rbacService.uid(request);
+        String query = query(inputs);
+        Integer chatId = DPUtil.parseInt(param.get("chatId"));
+        // 仅新建会话时校验必填参数：继续对话的入参已随会话带入，不再重复要求
+        if (isNewChat(chatId)) {
+            String absent = missingInputs(content, inputs);
+            if (!DPUtil.empty(absent)) return ApiUtil.result(1004, "缺少必填参数：" + absent, absent);
+        }
+        Chat chat = resolveChat(chatId, CHAT_PUBLISHED, query, uid);
+        prepareRuntime(uid, request);
+        long begin = System.currentTimeMillis();
+        ObjectNode result;
+        try {
+            result = agenticRunner.execute(content, inputs, history(chat.getId()), system(info, chat, uid, request));
+        } catch (Exception e) {
+            return failureResult(info, chat.getId(), "published", version, inputs, e, System.currentTimeMillis() - begin, uid, request);
+        }
         result.put("id", info.getId());
         result.put("name", info.getName());
         result.put("mode", info.getMode());
         result.put("version", version);
         result.put("publishedTime", null == info.getPublishedTime() ? 0L : info.getPublishedTime());
-        result.set("content", parseObject(info.getPublishedContent()));
-        result.set("inputs", null == param.get("inputs") ? DPUtil.objectNode() : parseObject(param.get("inputs")));
+        result.put("source", "published");
+        result.set("inputs", inputs);
+        result.put("chatId", chat.getId());
+        ChatDialog question = appendDialog(chat, "user", DPUtil.empty(query) ? DPUtil.stringify(inputs) : query, "", "", uid);
+        ChatDialog reply = appendDialog(chat, "assistant", result.at("/answer").asText(""), reasoning(result), reference(result), uid);
+        // 消息标识回传前端，调试面板可直接对本轮回复做反馈
+        result.put("questionId", null == question ? 0 : question.getId());
+        result.put("answerId", null == reply ? 0 : reply.getId());
+        AgenticLog log = writeLog(info, chat.getId(), "published", version, inputs, result, uid, request);
+        result.put("logId", null == log ? 0 : log.getId());
         return ApiUtil.result(0, null, result);
+    }
+
+    /* ------------------------------- 会话与历史 ------------------------------- */
+
+    /** 会话类型：调试运行与发布应用分开，避免调试记录混进线上会话 */
+    public static final String CHAT_DRAFT = "agentic_draft";
+    public static final String CHAT_PUBLISHED = "agentic";
+
+    /**
+     * 入参校验：开始节点里声明为必填的自定义参数是否都有取值（与设计器调试表单的必填规则一致），
+     * 返回缺失参数的展示名称（以、分隔），没有缺失时返回空串
+     */
+    protected String missingInputs(JsonNode content, ObjectNode inputs) {
+        JsonNode start = null;
+        for (JsonNode cell : content.at("/cells")) {
+            if ("Start".equals(cell.at("/data/type").asText(""))) {
+                start = cell.at("/data");
+                break;
+            }
+        }
+        if (null == start) return "缺少开始节点";
+        List<String> missing = new ArrayList<>();
+        for (JsonNode item : start.at("/variables")) {
+            String name = item.at("/name").asText("");
+            if (DPUtil.empty(name) || !item.at("/required").asBoolean(false)) continue;
+            if (blank(inputs.get(name))) {
+                missing.add(DPUtil.empty(item.at("/label").asText("")) ? name : item.at("/label").asText(""));
+            }
+        }
+        return DPUtil.implode("、", missing);
+    }
+
+    /**
+     * 取值是否为空：JsonNode 的 isEmpty() 对数值、布尔等标量节点恒为 true，
+     * 直接用 DPUtil.empty 会把 0、false 这类合法取值判成「未填写」，因此单独判断。
+     */
+    protected boolean blank(JsonNode value) {
+        if (null == value || value.isNull()) return true;
+        if (value.isTextual()) return DPUtil.empty(value.asText(""));
+        if (value.isArray() || value.isObject()) return value.isEmpty();
+        return false;
+    }
+
+    /**
+     * 系统变量：节点里 `{{#sys.xxx#}}` 取这些值——应用标识、会话标识、调用人、当前时间与日期。
+     * 用户输入与用户文件属于开始节点自身，直接引用开始节点的输出，不在这里重复。
+     * 时间按东八区格式化，一次运行内所有节点取到同一时刻：
+     * datetime 为「yyyy-MM-dd HH:mm:ss」，date 为「yyyy-MM-dd」。
+     */
+    protected Map<String, Object> system(Agentic info, Chat chat, Integer uid, HttpServletRequest request) {
+        JsonNode user = currentUser(request);
+        Map<String, Object> system = new LinkedHashMap<>();
+        system.put("appId", String.valueOf(info.getId()));
+        system.put("userId", null == uid ? "" : String.valueOf(uid));
+        system.put("userName", null == user ? "" : user.at("/name").asText(""));
+        system.put("conversationId", null == chat ? "" : String.valueOf(chat.getId()));
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
+        system.put("datetime", now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        system.put("date", now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")));
+        return system;
+    }
+
+    /** 当前登录用户：取不到时返回 null，不影响运行 */
+    protected JsonNode currentUser(HttpServletRequest request) {
+        try {
+            return null == request ? null : rbacService.currentInfo(request);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 用户输入：取开始节点的 query，没有时用入参 JSON 兜底 */
+    protected String query(ObjectNode inputs) {
+        String query = inputs.at("/query").asText("");
+        return DPUtil.empty(query) ? "" : DPUtil.trim(query);
+    }
+
+    /** 是否为新会话：chatId 为空或对应会话不存在时，按新会话处理 */
+    protected boolean isNewChat(Integer chatId) {
+        return null == chatId || chatId <= 0 || null == info(chatDao, chatId);
+    }
+
+    /** 取会话：chatId 有效时复用，否则按标题新建（标题取用户输入前 60 字） */
+    protected Chat resolveChat(Integer chatId, String type, String title, Integer uid) {
+        if (null != chatId && chatId > 0) {
+            Chat exists = info(chatDao, chatId);
+            if (null != exists) return exists;
+        }
+        long now = System.currentTimeMillis();
+        Chat chat = Chat.builder()
+                .title(DPUtil.empty(title) ? "新会话" : cut(title, 60))
+                .type(type)
+                .createdTime(now)
+                .createdUid(null == uid ? 0 : uid)
+                .updatedTime(now)
+                .updatedUid(null == uid ? 0 : uid)
+                // 各字段显式赋初值：@DynamicInsert 省略 null 字段，文本列没有默认值
+                .deletedReason("")
+                .deletedDetail("")
+                .deletedTime(0L)
+                .deletedUid(0)
+                .build();
+        return chatDao.save(chat);
+    }
+
+    /** 会话历史：按时间正序取最近若干轮，供模型作为上下文 */
+    protected ArrayNode history(Integer chatId) {
+        ArrayNode result = DPUtil.arrayNode();
+        if (null == chatId || chatId < 1) return result;
+        List<ChatDialog> rows = chatDialogDao.findAll((root, query, cb) -> cb.equal(root.get("chatId"), chatId),
+                Sort.by(Sort.Order.asc("id")));
+        for (ChatDialog row : rows) {
+            // 标记删除的消息不进模型上下文
+            if (null != row.getDeletedTime() && row.getDeletedTime() > 0) continue;
+            if (!Arrays.asList("user", "assistant").contains(DPUtil.parseString(row.getRole()))) continue;
+            // 回复正文里的图表占位符不进上下文（图表由前端按占位符渲染，不是模型该读的内容）
+            String content = ChartNodeHandler.stripPlaceholder(DPUtil.parseString(row.getContent()));
+            if (DPUtil.empty(content)) continue;
+            ObjectNode item = result.addObject();
+            item.put("role", DPUtil.parseString(row.getRole()));
+            item.put("content", content);
+            // 工具调用明细随历史一起带给节点，由节点按「工具链」开关决定是否加入上下文
+            String reference = DPUtil.parseString(row.getReference());
+            if (!DPUtil.empty(reference)) {
+                ArrayNode calls = referenceCalls(reference);
+                if (!calls.isEmpty()) item.set("toolCalls", calls);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 会话消息的参考数据：工具调用明细（供开启「工具链」记忆的节点在后续轮次里复用）
+     * 与最终回复要展示的图表（供历史消息回显）。没有图表时沿用早期的工具调用数组格式。
+     */
+    protected String reference(ObjectNode result) {
+        ArrayNode calls = calls(result);
+        ArrayNode charts = result.at("/charts").isArray()
+                ? (ArrayNode) result.at("/charts") : DPUtil.arrayNode();
+        if (charts.isEmpty()) return calls.isEmpty() ? "" : DPUtil.stringify(calls);
+        ObjectNode reference = DPUtil.objectNode();
+        reference.set("calls", calls);
+        reference.set("charts", charts);
+        return DPUtil.stringify(reference);
+    }
+
+    /** 本轮的工具调用明细：取自各节点输出里的 calls（工具方法名、参数、返回结果） */
+    protected ArrayNode calls(ObjectNode result) {
+        ArrayNode calls = DPUtil.arrayNode();
+        for (JsonNode node : result.at("/outputs")) {
+            JsonNode items = node.at("/calls");
+            if (items.isArray()) items.forEach(calls::add);
+        }
+        return calls;
+    }
+
+    /**
+     * 会话消息参考数据里的工具调用明细：早期直接存数组，带图表后存 {calls, charts} 对象，
+     * 这里统一取工具调用，两种格式都能用于「工具链」记忆。
+     */
+    protected ArrayNode referenceCalls(String reference) {
+        if (DPUtil.empty(reference)) return DPUtil.arrayNode();
+        JsonNode json = DPUtil.parseJSON(reference);
+        if (null == json) return DPUtil.arrayNode();
+        JsonNode calls = json.isObject() ? json.at("/calls") : json;
+        return calls.isArray() ? (ArrayNode) calls : DPUtil.arrayNode();
+    }
+
+    /** 会话消息参考数据里的图表：没有图表（早期数据）时返回空数组 */
+    protected ArrayNode referenceCharts(String reference) {
+        if (DPUtil.empty(reference)) return DPUtil.arrayNode();
+        JsonNode json = DPUtil.parseJSON(reference);
+        JsonNode charts = null == json ? null : json.at("/charts");
+        return null != charts && charts.isArray() ? (ArrayNode) charts : DPUtil.arrayNode();
+    }
+
+    /** 追加会话消息并刷新会话的更新时间（reference 存本轮的工具调用明细） */
+    protected ChatDialog appendDialog(Chat chat, String role, String content, String reasoning, String reference, Integer uid) {
+        if (DPUtil.empty(content)) return null;
+        // @DynamicInsert 会省略 null 字段，text/longtext 列在 MySQL 中没有默认值，
+        // 因此这里把各字段显式赋初值（不在实体与建表语句上做默认值）
+        ChatDialog dialog = ChatDialog.builder()
+                .chatId(chat.getId())
+                .parentId(0)
+                .role(role)
+                .content(DPUtil.parseString(content))
+                .reasoningContent(DPUtil.parseString(reasoning))
+                .intent("")
+                .reference(DPUtil.parseString(reference))
+                .finishReason("")
+                .feedbackEmotion("")
+                .feedbackTag("")
+                .feedbackContent("")
+                .feedbackTime(0L)
+                .createdTime(System.currentTimeMillis())
+                .createdUid(null == uid ? 0 : uid)
+                .auditReason("")
+                .auditDetail("")
+                .auditTime(0L)
+                .auditUid(0)
+                .deletedReason("")
+                .deletedDetail("")
+                .deletedTime(0L)
+                .deletedUid(0)
+                .build();
+        ChatDialog saved = chatDialogDao.save(dialog);
+        chat.setUpdatedTime(System.currentTimeMillis());
+        chat.setUpdatedUid(null == uid ? 0 : uid);
+        chatDao.save(chat);
+        return saved;
+    }
+
+    /** 回复的思考过程：取第一个大模型节点输出的 reasoning */
+    protected String reasoning(ObjectNode result) {
+        for (JsonNode node : result.at("/outputs")) {
+            String reasoning = node.at("/reasoning").asText("");
+            if (!DPUtil.empty(reasoning)) return reasoning;
+        }
+        return "";
+    }
+
+    /** 会话列表：只看编排产生的会话（调试与发布），支持按标题检索 */
+    public ObjectNode chatSearch(Map<String, Object> param, Map<?, ?> args) {
+        ObjectNode result = search(chatDao, param, (root, query, cb) -> {
+            SpecificationHelper<Chat> helper = SpecificationHelper.newInstance(root, cb, param);
+            helper.dateFormat(configuration.getFormatDate()).equalWithIntGTZero("id")
+                    .equalWithIntGTZero("createdUid").equal("type").like("title");
+            List<jakarta.persistence.criteria.Predicate> predicates = new ArrayList<>(Arrays.asList(helper.predicates()));
+            predicates.add(cb.in(root.get("type")).value(Arrays.asList(CHAT_DRAFT, CHAT_PUBLISHED)));
+            addDeleted(predicates, root, cb, param);
+            // 按流程筛选会话：会话表没有流程字段，用运行日志的子查询（该流程有运行记录的会话）
+            int agenticId = DPUtil.parseInt(param.get("agenticId"));
+            if (agenticId > 0) {
+                jakarta.persistence.criteria.Subquery<Integer> sub = query.subquery(Integer.class);
+                jakarta.persistence.criteria.Root<AgenticLog> logRoot = sub.from(AgenticLog.class);
+                sub.select(logRoot.get("chatId")).where(cb.equal(logRoot.get("agenticId"), agenticId));
+                predicates.add(root.get("id").in(sub));
+            }
+            return cb.and(predicates.toArray(new jakarta.persistence.criteria.Predicate[0]));
+        }, Sort.by(Sort.Order.desc("updatedTime"), Sort.Order.desc("id")), Arrays.asList("id", "updatedTime", "createdTime"));
+        JsonNode rows = ApiUtil.rows(result);
+        for (JsonNode row : rows) {
+            ObjectNode node = (ObjectNode) row;
+            node.put("typeText", CHAT_PUBLISHED.equals(node.at("/type").asText("")) ? "发布应用" : "调试运行");
+            node.put("deletedText", node.at("/deletedTime").asLong(0) > 0 ? "已删除" : "正常");
+        }
+        if (!DPUtil.empty(args.get("withUserInfo"))) {
+            rbacService.fillUserInfo(rows, "createdUid", "updatedUid");
+        }
+        return result;
+    }
+
+    /** 会话详情：消息列表 + 每轮运行日志（按钮点开可看节点与工具明细） */
+    public ObjectNode chatInfo(Integer chatId) {
+        Chat chat = null == chatId ? null : info(chatDao, chatId);
+        if (null == chat) return null;
+        ObjectNode result = (ObjectNode) DPUtil.toJSON(List.of(chat)).get(0);
+        result.put("typeText", CHAT_PUBLISHED.equals(chat.getType()) ? "发布应用" : "调试运行");
+        // 创建人/更新人随详情返回，前端展示会话的归属信息
+        ArrayNode chatRows = DPUtil.arrayNode();
+        chatRows.add(result); // fillUserInfo 会就地填充，传入同一节点引用即可
+        rbacService.fillUserInfo(chatRows, "createdUid", "updatedUid");
+        /**
+         * 运行日志：一次查询拿齐会话回看需要的轻量字段（answerId / failures 等），
+         * 回复与日志按 answer_id 列关联（不再解析 outputs JSON），
+         * inputs / outputs / steps 三个大字段留给「执行过程」按 logId 懒加载
+         */
+        List<AgenticLogDao.LogIndex> logs = agenticLogDao.findByChatIdAndDeletedTimeOrderByIdAsc(chatId, 0L);
+        Map<Integer, Integer> logByAnswer = new LinkedHashMap<>();
+        Map<Integer, JsonNode> failuresByLog = new LinkedHashMap<>();
+        for (AgenticLogDao.LogIndex log : logs) {
+            if (null != log.getAnswerId() && log.getAnswerId() > 0) logByAnswer.put(log.getAnswerId(), log.getId());
+            JsonNode failures = parseArray(DPUtil.parseString(log.getFailures()));
+            if (!failures.isEmpty()) failuresByLog.put(log.getId(), failures);
+        }
+        List<ChatDialog> dialogs = chatDialogDao.findAll((root, query, cb) -> cb.and(
+                cb.equal(root.get("chatId"), chatId),
+                cb.equal(root.get("deletedTime"), 0L)), Sort.by(Sort.Order.asc("id")));
+        ArrayNode messages = result.putArray("messages");
+        for (ChatDialog dialog : dialogs) {
+            if (dialog.getDeletedTime() != null && dialog.getDeletedTime() > 0) continue;
+            ObjectNode node = messages.addObject();
+            node.put("id", dialog.getId());
+            node.put("role", DPUtil.parseString(dialog.getRole()));
+            node.put("content", DPUtil.parseString(dialog.getContent()));
+            node.put("reasoning", DPUtil.parseString(dialog.getReasoningContent()));
+            // 反馈信息随消息返回，前端据此回显点赞/点踩状态
+            node.put("feedbackEmotion", DPUtil.parseString(dialog.getFeedbackEmotion()));
+            node.put("feedbackTag", DPUtil.parseString(dialog.getFeedbackTag()));
+            node.put("feedbackContent", DPUtil.parseString(dialog.getFeedbackContent()));
+            node.put("createdTime", null == dialog.getCreatedTime() ? 0L : dialog.getCreatedTime());
+            // 本轮回复要展示的图表：随消息返回，历史记录打开后与当时展示一致
+            ArrayNode charts = referenceCharts(DPUtil.parseString(dialog.getReference()));
+            if (!charts.isEmpty()) node.set("charts", charts);
+            // 本轮运行日志标识：前端按它拉取完整的节点与工具调用过程（定位问题用）
+            Integer logId = logByAnswer.get(dialog.getId());
+            if (null != logId) {
+                node.put("logId", logId);
+                // 与调试面板一致：节点/工具调用异常挂到这条回复上，历史记录打开就能看到异常图标
+                JsonNode failures = failuresByLog.getOrDefault(logId, DPUtil.arrayNode());
+                if (!failures.isEmpty()) {
+                    ObjectNode notice = DPUtil.objectNode();
+                    notice.put("summary", failures.get(0).asText(""));
+                    StringBuilder detail = new StringBuilder();
+                    for (int index = 1; index < failures.size(); index++) {
+                        if (detail.length() > 0) detail.append('\n');
+                        detail.append(failures.get(index).asText(""));
+                    }
+                    notice.put("detail", detail.toString());
+                    node.set("notice", notice);
+                }
+            }
+        }
+        ArrayNode runs = result.putArray("runs");
+        Map<Integer, String> agenticNames = new LinkedHashMap<>();
+        for (AgenticLogDao.LogIndex log : logs) {
+            ObjectNode node = runs.addObject();
+            node.put("id", log.getId());
+            node.put("agenticId", null == log.getAgenticId() ? 0 : log.getAgenticId());
+            node.put("status", null == log.getStatus() ? 1 : log.getStatus());
+            node.put("duration", null == log.getDuration() ? 0L : log.getDuration());
+            node.put("error", DPUtil.parseString(log.getError()));
+            node.put("createdTime", null == log.getCreatedTime() ? 0L : log.getCreatedTime());
+        }
+        fillAgenticName(runs);
+        return result;
+    }
+
+    /**
+     * 运行异常清单：节点执行失败与工具方法调用失败（与前端 runFailures 同一口径）。
+     * 写入日志时预计算并存进 failures 列，会话回看直接取用，不必再解析 steps
+     */
+    protected ArrayNode failures(JsonNode steps, int status, String error) {
+        ArrayNode result = DPUtil.arrayNode();
+        for (JsonNode step : steps) {
+            // 摘要只留前几条：够定位问题即可，完整信息仍在 steps / error 列里
+            if (result.size() >= 5) break;
+            if (2 == step.at("/status").asInt(1)) {
+                result.add(brief("节点「" + step.at("/name").asText("") + "」执行失败：" + step.at("/error").asText("未知原因")));
+            }
+            JsonNode output = parseObject(step.at("/output").asText(""));
+            for (JsonNode call : output.at("/calls")) {
+                if (2 != call.at("/status").asInt(1)) continue;
+                if (result.size() >= 5) break;
+                result.add(brief("工具方法「" + call.at("/method").asText("") + "」调用失败：" + call.at("/error").asText("未知原因")));
+            }
+        }
+        if (result.isEmpty() && 2 == status && !DPUtil.empty(error)) {
+            result.add(brief(error));
+        }
+        return result;
+    }
+
+    /** 摘要文案限长：failures 列按 varchar(2000) 存，单条截断避免超长（完整内容仍在 error / steps 列） */
+    protected String brief(String text) {
+        String value = DPUtil.parseString(text).trim();
+        return value.length() > 200 ? value.substring(0, 200) + "…" : value;
+    }
+
+    /**
+     * 日志输出：去掉与 inputs / steps 列重复的内容，
+     * 避免同一份大字段（尤其逐节点明细）在 longtext 里存两遍
+     */
+    protected ObjectNode logOutputs(ObjectNode result) {
+        ObjectNode outputs = result.deepCopy();
+        outputs.remove("inputs");
+        outputs.remove("steps");
+        return outputs;
+    }
+
+    /**
+     * 消息反馈：对助手回复点赞/点踩，可附标签与说明；再次提交同一情绪表示取消反馈。
+     * 反馈只做运营分析，不参与对话上下文。
+     */
+    public ChatDialog chatFeedback(Integer dialogId, String emotion, String tag, String content) {
+        if (null == dialogId || dialogId <= 0) return null;
+        ChatDialog dialog = info(chatDialogDao, dialogId);
+        if (null == dialog) return null;
+        String next = Arrays.asList("positive", "negative").contains(emotion) ? emotion : "";
+        // 再次点击同一情绪即取消，避免误操作无法撤回
+        if (next.equals(DPUtil.parseString(dialog.getFeedbackEmotion()))) next = "";
+        dialog.setFeedbackEmotion(next);
+        dialog.setFeedbackTag(DPUtil.empty(next) ? "" : DPUtil.parseString(tag));
+        dialog.setFeedbackContent(DPUtil.empty(next) ? "" : DPUtil.parseString(content));
+        dialog.setFeedbackTime(DPUtil.empty(next) ? 0L : System.currentTimeMillis());
+        return chatDialogDao.save(dialog);
+    }
+
+    /**
+     * 删除会话：标记删除（保留消息与运行日志，便于追溯），
+     * 会话、消息、运行日志一起打删除标记；默认列表与模型历史都不再取到
+     */
+    public boolean chatRemove(List<Integer> ids, HttpServletRequest request) {
+        if (null == ids || ids.isEmpty()) return false;
+        int uid = rbacService.uid(request);
+        long time = System.currentTimeMillis();
+        for (Integer id : ids) {
+            Chat chat = id > 0 ? info(chatDao, id) : null;
+            if (null == chat) continue;
+            markDeleted(chat, uid, time);
+            save(chatDao, chat, uid);
+            // 只处理未删除的子记录：已删除消息/日志不再重复打标记
+            List<ChatDialog> dialogs = chatDialogDao.findAll((root, query, cb) -> cb.and(
+                    cb.equal(root.get("chatId"), id), cb.equal(root.get("deletedTime"), 0L)));
+            for (ChatDialog dialog : dialogs) {
+                markDeleted(dialog, uid, time);
+                save(chatDialogDao, dialog, uid);
+            }
+            List<AgenticLog> logs = agenticLogDao.findAll((root, query, cb) -> cb.and(
+                    cb.equal(root.get("chatId"), id), cb.equal(root.get("deletedTime"), 0L)));
+            for (AgenticLog log : logs) {
+                markDeleted(log, uid, time);
+                save(agenticLogDao, log, uid);
+            }
+        }
+        return true;
+    }
+
+    /** 打删除标记：会话、消息、运行日志共用（deletedTime=0 表示未删除） */
+    protected void markDeleted(Chat chat, int uid, long time) {
+        chat.setDeletedDetail("");
+        chat.setDeletedReason("");
+        chat.setDeletedTime(time);
+        chat.setDeletedUid(uid);
+    }
+
+    protected void markDeleted(ChatDialog dialog, int uid, long time) {
+        dialog.setDeletedDetail("");
+        dialog.setDeletedReason("");
+        dialog.setDeletedTime(time);
+        dialog.setDeletedUid(uid);
+    }
+
+    protected void markDeleted(AgenticLog log, int uid, long time) {
+        log.setDeletedTime(time);
+        log.setDeletedUid(uid);
+    }
+
+    /* ------------------------------- 运行日志 ------------------------------- */
+
+    /**
+     * 运行异常的统一处理：先补一条失败日志（含已产生的步骤与失败原因），再返回统一的错误信封。
+     * 此前执行阶段抛出的异常（知识库向量化/重排序超时、连接断开导致推送异常等）会直接冒到接口层，
+     * 会话消息与运行日志都写不下来，前端只剩一个网络错误，问题无从追溯；流式通道据此按 error 事件下发。
+     */
+    protected Map<String, Object> failureResult(Agentic info, Integer chatId, String source, int version,
+                                                ObjectNode inputs, Exception e, long duration,
+                                                Integer uid, HttpServletRequest request) {
+        String message = DPUtil.parseString(e.getMessage());
+        String error = DPUtil.empty(message) ? e.getClass().getSimpleName() : message;
+        ObjectNode result = DPUtil.objectNode();
+        result.put("status", 2);
+        result.put("error", error);
+        result.put("duration", duration);
+        // 已执行到的节点明细：运行时按线程保存，异常时取到的正是部分进度
+        result.set("steps", agenticRunner.steps());
+        AgenticLog log = writeLog(info, chatId, source, version, inputs, result, uid, request);
+        logger.warn("编排运行异常（agenticId={}, chatId={}, logId={}）：{}", info.getId(), chatId,
+                null == log ? 0 : log.getId(), error, e);
+        return ApiUtil.result(9500, "运行异常：" + error, null);
+    }
+
+    /** 写入运行日志：调试运行与外部调用共用，记录入参、输出、步骤与失败原因 */
+    protected AgenticLog writeLog(Agentic info, Integer chatId, String source, int version, ObjectNode inputs,
+                                  ObjectNode result, Integer uid, HttpServletRequest request) {
+        try {
+            AgenticLog log = AgenticLog.builder()
+                    .agenticId(info.getId())
+                    .chatId(null == chatId ? 0 : chatId)
+                    // 回复消息标识落到列：会话回看时按列关联，不再解析 outputs JSON
+                    .answerId(result.at("/answerId").asInt(0))
+                    .source(source)
+                    .version(version)
+                    .status(2 == result.at("/status").asInt(1) ? 2 : 1)
+                    .duration(result.at("/duration").asLong(0))
+                    .inputs(DPUtil.stringify(inputs))
+                    .outputs(DPUtil.stringify(logOutputs(result)))
+                    .steps(DPUtil.stringify(result.at("/steps")))
+                    .error(DPUtil.parseString(result.at("/error").asText("")))
+                    // 异常摘要预计算：会话回看直接取用，不必再解析 steps（列表/历史消息都用得到）
+                    .failures(DPUtil.stringify(failures(result.at("/steps"),
+                            result.at("/status").asInt(1), result.at("/error").asText(""))))
+                    .ip(null == request ? "" : DPUtil.parseString(request.getRemoteAddr()))
+                    .createdTime(System.currentTimeMillis())
+                    .createdUid(null == uid ? 0 : uid)
+                    .deletedTime(0L)
+                    .deletedUid(0)
+                    .build();
+            return agenticLogDao.save(log);
+        } catch (Exception e) {
+            // 日志失败不影响运行结果，但要留下痕迹，避免「日志丢失」无从发现
+            logger.warn("写入运行日志失败（agenticId={}, chatId={}）", info.getId(), chatId, e);
+            return null;
+        }
+    }
+
+    /** 运行日志列表：不返回大字段（入参、输出、步骤在详情里返回） */
+    public ObjectNode logSearch(Map<String, Object> param, Map<?, ?> args) {
+        ObjectNode result = search(agenticLogDao, param, (root, query, cb) -> {
+            SpecificationHelper<AgenticLog> helper = SpecificationHelper.newInstance(root, cb, param);
+            helper.dateFormat(configuration.getFormatDate()).equalWithIntGTZero("id")
+                    .equalWithIntGTZero("agenticId").equalWithIntGTZero("createdUid")
+                    .equalWithIntNotEmpty("status").equal("source");
+            List<jakarta.persistence.criteria.Predicate> predicates = new ArrayList<>(Arrays.asList(helper.predicates()));
+            // 删除状态筛选：only 只看已删除、without 只看未删除、其余为全部
+            addDeleted(predicates, root, cb, param);
+            return cb.and(predicates.toArray(new jakarta.persistence.criteria.Predicate[0]));
+        }, Sort.by(Sort.Order.desc("id")), sorts().keySet());
+        // 列表不返回入参、输出与步骤：直接按「无详情」格式化，避免先把大字段 JSON.parse 成对象再丢掉
+        JsonNode rows = formatLog(ApiUtil.rows(result), false);
+        // 编排名称不再冗余存库：按 agenticId 填充展示
+        fillAgenticName(rows);
+        if (!DPUtil.empty(args.get("withUserInfo"))) {
+            rbacService.fillUserInfo(rows, "createdUid");
+        }
+        return result;
+    }
+
+    /** 详情：解析入参、输出与步骤，供运行日志详情与设计器调试结果展示 */
+    public ObjectNode logInfo(Integer id) {
+        AgenticLog log = null == id ? null : info(agenticLogDao, id);
+        if (null == log) return null;
+        JsonNode rows = DPUtil.toJSON(List.of(log));
+        ObjectNode node = (ObjectNode) formatLog(rows).get(0);
+        JsonNode items = DPUtil.arrayNode();
+        ((ArrayNode) items).add(node); // fillAgenticName 会就地填充，传入同一节点引用即可
+        fillAgenticName(items);
+        // 调用人信息：列表走 withUserInfo 填充，详情同样要填充，否则前端只能显示「系统」
+        ArrayNode userRows = DPUtil.arrayNode();
+        userRows.add(node);
+        rbacService.fillUserInfo(userRows, "createdUid");
+        return node;
+    }
+
+    /** 列表里用户输入的解析上限：超过该长度不解析（避免极端大字段拖慢列表） */
+    private static final int LOG_INPUT_PARSE_LIMIT = 200 * 1024;
+    /** 列表里用户输入的展示上限 */
+    private static final int LOG_INPUT_TEXT_LIMIT = 200;
+
+    /**
+     * 列表里的用户输入摘要：入参结构随节点配置而变，可能是 { query }、嵌套在 inputs/data 里，
+     * 或存成 [{ name: 'query', value }] 的键值对数组；按优先级取第一个命中的字符串并截断。
+     */
+    private String logInput(String inputs) {
+        if (DPUtil.empty(inputs) || inputs.length() > LOG_INPUT_PARSE_LIMIT) return "";
+        JsonNode parsed = parseObject(inputs);
+        if (null == parsed) return "";
+        for (String path : List.of("/query", "/input", "/message", "/prompt", "/inputs/query", "/inputs/input", "/data/query")) {
+            String text = parsed.at(path).asText("");
+            if (!text.isEmpty()) return truncateLogInput(text);
+        }
+        for (JsonNode item : parsed) {
+            String key = item.at("/name").asText(item.at("/key").asText(""));
+            if (!List.of("query", "input", "message", "prompt").contains(key)) continue;
+            String text = item.at("/value").asText(item.at("/content").asText(""));
+            if (!text.isEmpty()) return truncateLogInput(text);
+        }
+        return "";
+    }
+
+    /** 截断列表里的用户输入，避免长文本撑开表格 */
+    private String truncateLogInput(String text) {
+        return text.length() > LOG_INPUT_TEXT_LIMIT ? text.substring(0, LOG_INPUT_TEXT_LIMIT) + "…" : text;
+    }
+
+    public JsonNode formatLog(JsonNode rows) {
+        return formatLog(rows, true);
+    }
+
+    /**
+     * 运行日志格式化：withDetail=false 时不解析 inputs / outputs / steps（列表页用不到，内容很大），
+     * 只做展示文案的补齐，避免把大字段解析成对象后又移除
+     */
+    public JsonNode formatLog(JsonNode rows, boolean withDetail) {
+        for (JsonNode row : rows) {
+            ObjectNode node = (ObjectNode) row;
+            if (withDetail) {
+                node.replace("inputs", parseObject(node.at("/inputs").asText("")));
+                node.replace("outputs", parseObject(node.at("/outputs").asText("")));
+                node.replace("steps", parseArray(node.at("/steps").asText("")));
+            } else {
+                // 列表不返回大字段，但「用户输入」是列表的检索线索：只抽一条摘要，不整块返回
+                node.put("inputsText", logInput(node.at("/inputs").asText("")));
+                node.remove("inputs");
+                node.remove("outputs");
+                node.remove("steps");
+            }
+            // 异常摘要：预计算的小字段，列表与详情都以数组返回
+            node.replace("failures", parseArray(node.at("/failures").asText("")));
+            node.put("sourceText", "published".equals(node.at("/source").asText("")) ? "外部调用" : "调试运行");
+            node.put("statusText", 2 == node.at("/status").asInt(1) ? "失败" : "成功");
+            node.put("deletedText", node.at("/deletedTime").asLong(0) > 0 ? "已删除" : "正常");
+        }
+        return rows;
+    }
+
+    /** 运行日志里的编排名称：按 agenticId 关联编排填充（列表与详情共用） */
+    protected void fillAgenticName(JsonNode rows) {
+        Set<Integer> ids = new LinkedHashSet<>();
+        for (JsonNode row : rows) {
+            int id = row.at("/agenticId").asInt(0);
+            if (id > 0) ids.add(id);
+        }
+        Map<Integer, String> names = new LinkedHashMap<>();
+        for (Integer id : ids) {
+            Agentic info = info(id);
+            names.put(id, null == info ? "已删除的编排（ID：" + id + "）" : DPUtil.parseString(info.getName()));
+        }
+        for (JsonNode row : rows) {
+            ((ObjectNode) row).put("agenticName", names.getOrDefault(row.at("/agenticId").asInt(0), ""));
+        }
+    }
+
+    public boolean logRemove(List<Integer> ids) {
+        if (null == ids || ids.isEmpty()) return false;
+        long time = System.currentTimeMillis();
+        for (Integer id : ids) {
+            AgenticLog log = id > 0 ? info(agenticLogDao, id) : null;
+            if (null == log) continue;
+            markDeleted(log, 0, time);
+            save(agenticLogDao, log, 0);
+        }
+        return true;
+    }
+
+    protected String cut(String text, int length) {
+        String value = DPUtil.parseString(text);
+        return value.length() <= length ? value : value.substring(0, length);
     }
 
     public boolean remove(List<Integer> ids) {
@@ -209,6 +1306,8 @@ public class AgenticService extends JPAServiceBase {
         JsonNode rows = format(ApiUtil.rows(result));
         if (!DPUtil.empty(args.get("withUserInfo"))) {
             rbacService.fillUserInfo(rows, "createdUid", "updatedUid", "publishedUid");
+            // 授权角色：按 roleIds 填充角色信息（列表页展示角色名称）
+            rbacService.fillInfos(rows);
         }
         if (!DPUtil.empty(args.get("withStatusText"))) {
             fillStatus(rows, status());
@@ -223,6 +1322,8 @@ public class AgenticService extends JPAServiceBase {
         for (JsonNode row : rows) {
             ObjectNode node = (ObjectNode) row;
             node.set("tags", parseArray(node.at("/tags").asText("")));
+            // 授权角色：列表以数组返回，供列表页展示与用户对话页筛选
+            node.set("roleIds", DPUtil.toJSON(DPUtil.parseIntList(node.at("/roleIds").asText(""))));
             node.remove("content");
             node.remove("publishedContent");
             node.put("modeText", modes().get(node.at("/mode").asText("")));

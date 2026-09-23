@@ -23,6 +23,7 @@ const columns = ref([
   { prop: 'name', label: '应用名称' },
   { prop: 'modeText', label: '应用类型' },
   { prop: 'tags', label: '标签', slot: 'tags' },
+  { prop: 'roles', label: '授权角色', slot: 'roles' },
   { prop: 'publishText', label: '发布状态', slot: 'publishText' },
   { prop: 'publishedTime', label: '发布时间', slot: 'publishedTime' },
   { prop: 'description', label: '描述', hide: true },
@@ -98,6 +99,10 @@ const handleDelete = () => {
 const handleDesign = (scope: any) => {
   router.push({ path: '/agent/agentic/model', query: { id: scope.row.id } })
 }
+// 运行日志：按编排标识带上链接参数，日志页打开即筛出该编排的运行记录
+const handleLog = (scope: any) => {
+  router.push({ path: '/agent/agentic/log', query: { agenticId: scope.row.id } })
+}
 const modeText = (mode: any) => {
   const item = config.modes.find((item: any) => item.value === mode)
   return item ? item.label : mode
@@ -135,8 +140,8 @@ const modeText = (mode: any) => {
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
-        <TableSort v-model="filters.sort" :columns="columns" :sortable="configData.sorts" @change="handleRefresh(true, true)" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
+        <TableSort v-model="filters.sort" :columns="columns" :sortable="configData.sorts" :loading="loading" @change="handleRefresh(true, true)" />
       </el-space>
     </div>
     <el-table
@@ -155,6 +160,13 @@ const modeText = (mode: any) => {
             <el-tag type="info" v-for="item in scope.row.tags" :key="item">{{ item }}</el-tag>
           </el-space>
         </template>
+        <!-- 授权角色：未配置表示所有登录用户可用 -->
+        <template #roles="scope">
+          <el-space v-if="(scope.row.roles ?? []).length">
+            <el-tag type="warning" effect="plain" v-for="item in scope.row.roles" :key="item.id">{{ item.name }}</el-tag>
+          </el-space>
+          <el-tag v-else type="success" effect="plain">全部用户</el-tag>
+        </template>
         <template #publishText="scope">
           <el-tag :type="scope.row.publishedVersion > 0 ? 'success' : 'info'" effect="plain">{{ scope.row.publishText }}</el-tag>
         </template>
@@ -166,10 +178,11 @@ const modeText = (mode: any) => {
           <el-button link @click="handleShow(scope)" v-permit="'agent:agentic:'">查看</el-button>
           <el-button link @click="handleDesign(scope)" v-permit="'agent:agentic:modify'">编排</el-button>
           <el-button link @click="handlePublish(scope)" v-permit="'agent:agentic:modify'">发布</el-button>
+          <el-button link @click="handleLog(scope)" v-permit="'agent:agentic:'">运行日志</el-button>
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
   <el-drawer v-model="infoVisible" :title="'信息查看 - ' + info.id">
     <el-form :model="info" label-width="auto">
@@ -179,6 +192,12 @@ const modeText = (mode: any) => {
         <el-space>
           <el-tag type="info" v-for="item in info.tags" :key="item">{{ item }}</el-tag>
         </el-space>
+      </el-form-item>
+      <el-form-item label="授权角色">
+        <el-space v-if="(info.roles ?? []).length">
+          <el-tag type="warning" effect="plain" v-for="item in info.roles" :key="item.id">{{ item.name }}</el-tag>
+        </el-space>
+        <span v-else>全部用户</span>
       </el-form-item>
       <el-form-item label="排序">{{ info.sort }}</el-form-item>
       <el-form-item label="状态">{{ info.statusText }}</el-form-item>

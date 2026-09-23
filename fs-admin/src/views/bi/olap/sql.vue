@@ -130,6 +130,15 @@ const handleRefreshTree = () => {
   treeKey.value++
 }
 
+const handleCollapseAll = () => {
+  const store = treeRef.value?.store
+  if (!store) return
+  const nodes: any[] = store._getAllNodes ? store._getAllNodes() : Object.values(store.nodesMap || {})
+  nodes.forEach((node: any) => {
+    if (node.expanded) node.collapse()
+  })
+}
+
 watch(keyword, (value) => {
   treeRef.value?.filter(value)
 })
@@ -421,7 +430,14 @@ onUnmounted(() => {
         <div class="olap-sql__aside">
           <div class="olap-sql__aside-toolbar">
             <el-input v-model="keyword" placeholder="搜索数据对象" clearable :prefix-icon="ElementPlusIcons.Search" />
-            <el-button :icon="ElementPlusIcons.Refresh" title="刷新" @click="handleRefreshTree" />
+            <div class="olap-sql__aside-actions">
+              <el-tooltip content="折叠全部" placement="bottom">
+                <el-button :icon="ElementPlusIcons.Fold" @click="handleCollapseAll" />
+              </el-tooltip>
+              <el-tooltip content="刷新" placement="bottom">
+                <el-button :icon="ElementPlusIcons.Refresh" @click="handleRefreshTree" />
+              </el-tooltip>
+            </div>
           </div>
           <div class="olap-sql__aside-body">
             <el-scrollbar class="olap-sql__aside-scrollbar">
@@ -456,12 +472,14 @@ onUnmounted(() => {
           <el-splitter-panel :size="300" :min="120">
             <div class="olap-sql__editor">
               <div class="olap-sql__editor-toolbar flex-between">
-                <el-space>
-                  <el-button type="primary" :icon="ElementPlusIcons.VideoPlay" :loading="executeLoading" @click="runQuery(false, false)" text>执行查询</el-button>
+                <el-space wrap>
+                  <el-button type="primary" :icon="ElementPlusIcons.VideoPlay" :loading="executeLoading" @click="runQuery(false, false)">执行查询</el-button>
                   <el-button :icon="ElementPlusIcons.Select" :loading="executeLoading" @click="runQuery(false, true)" text>执行选中</el-button>
                   <el-button :icon="ElementPlusIcons.DataAnalysis" :loading="executeLoading" @click="runQuery(true, true)" text>执行计划</el-button>
+                  <el-divider direction="vertical" />
                   <el-button :icon="ElementPlusIcons.MagicStick" @click="handleBeautify" text>美化</el-button>
                   <el-button :icon="ElementPlusIcons.Delete" @click="sql = ''" text>清空</el-button>
+                  <el-divider direction="vertical" />
                   <el-popover placement="bottom-start" :width="260" trigger="click" :popper-style="{ padding: '12px' }">
                     <template #reference>
                       <el-button :icon="ElementPlusIcons.PriceTag" text>变量</el-button>
@@ -481,7 +499,11 @@ onUnmounted(() => {
                 </el-space>
                 <el-space>
                   <el-tooltip content="Ctrl + Enter 查询" placement="bottom">
-                    <span class="olap-sql__shortcut">Ctrl+Enter</span>
+                    <span class="olap-sql__shortcut">
+                      <kbd class="olap-sql__key">Ctrl</kbd>
+                      <span class="olap-sql__plus">+</span>
+                      <kbd class="olap-sql__key">Enter</kbd>
+                    </span>
                   </el-tooltip>
                   <el-popover placement="bottom-end" :width="240" trigger="click" :popper-style="{ padding: '12px 16px' }">
                     <template #reference>
@@ -502,7 +524,15 @@ onUnmounted(() => {
                 </el-space>
               </div>
               <div class="olap-sql__editor-body">
-                <code-editor ref="editorRef" v-model="sql" mode="sql" :hints="hints" fill />
+                <!-- 铺满整个编辑区：不要输入框式边框，底色沿用 base16-light 主题原来的浅灰，保持编辑区原有观感 -->
+                <code-editor
+                  ref="editorRef"
+                  v-model="sql"
+                  mode="sql"
+                  :hints="hints"
+                  fill
+                  :bordered="false"
+                  background="#f5f5f5" />
               </div>
             </div>
           </el-splitter-panel>
@@ -539,7 +569,7 @@ onUnmounted(() => {
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
-                      <TableColumnSetting v-model="columns" :table="tableRef" :key="activeResult.id" text />
+                      <TableColumnSetting v-model="columns" :table="tableRef" :key="activeResult.id" text :loading="executeLoading" />
                     </el-space>
                   </div>
                 </template>
@@ -602,6 +632,10 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .olap-sql {
+  /* 顶部三条工具条（树搜索栏、编辑器操作栏、结果信息条）统一高度：32px 控件 + 上下 6px 留白 + 1px 分隔线 */
+  --olap-sql-bar-height: 45px;
+  --olap-sql-bar-padding: 8px;
+
   height: 100%;
   overflow: hidden;
 
@@ -621,9 +655,30 @@ onUnmounted(() => {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 6px 8px;
+  min-height: var(--olap-sql-bar-height);
+  padding: 4px var(--olap-sql-bar-padding);
   border-bottom: 1px solid var(--el-border-color-light);
+  box-sizing: border-box;
+
+  /* 搜索框优先占位：窄面板下按钮整体换行，而不是把输入框压成一条缝、按钮挤出面板 */
+  :deep(.el-input) {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+}
+
+.olap-sql__aside-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  :deep(.el-button) {
+    margin-left: 0;
+  }
 }
 
 .olap-sql__aside-body {
@@ -686,8 +741,18 @@ onUnmounted(() => {
 
 .olap-sql__editor-toolbar {
   flex: none;
-  padding: 6px 10px;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 6px 8px;
+  min-height: var(--olap-sql-bar-height);
+  padding: 4px var(--olap-sql-bar-padding);
   border-bottom: 1px solid var(--el-border-color-light);
+  box-sizing: border-box;
+
+  :deep(.el-divider--vertical) {
+    margin: 0 4px;
+    height: 18px;
+  }
 }
 
 .olap-sql__editor-body {
@@ -753,15 +818,32 @@ onUnmounted(() => {
   }
 }
 
-.olap-sql__limit-label {
-  font-size: 12px;
+.olap-sql__shortcut {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+
+.olap-sql__key {
+  padding: 0 6px;
+  border: 1px solid var(--el-border-color);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: var(--el-fill-color-light);
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
   color: var(--el-text-color-secondary);
 }
 
-.olap-sql__shortcut {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  cursor: default;
+.olap-sql__plus {
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--el-text-color-placeholder);
 }
 
 .olap-sql__result {
@@ -769,7 +851,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: #fff;
-  margin-top: 5px;
+  padding-top: 5px;
+  box-sizing: border-box;
 }
 
 .olap-sql__result-tabs {
@@ -787,22 +870,18 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 10;
+  height: var(--olap-sql-bar-height);
+  padding: 0 var(--olap-sql-bar-padding);
+  box-sizing: border-box;
   background: var(--el-bg-color);
-  padding: 6px 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  border-bottom: 1px solid var(--el-border-color-lighter);
-}
-
-.olap-sql__result-meta-sql-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  border-bottom: 1px solid var(--el-border-color-light);
 }
 
 .olap-sql__result-sql {
   flex: none;
-  padding: 6px 12px;
+  padding: 6px var(--olap-sql-bar-padding);
   font-family: monospace;
   font-size: 12px;
   color: var(--el-text-color-regular);
@@ -852,7 +931,7 @@ onUnmounted(() => {
 
   :deep(.el-table__header-wrapper) {
     position: sticky;
-    top: 45px;
+    top: var(--olap-sql-bar-height);
     z-index: 5;
     background: var(--el-table-header-bg-color);
   }

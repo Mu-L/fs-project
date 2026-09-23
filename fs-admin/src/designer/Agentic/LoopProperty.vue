@@ -1,12 +1,14 @@
 <script setup lang="ts">
 /**
  * 循环节点属性 - 循环执行一段逻辑直到满足结束条件或到达循环次数上限。
+ * 循环节点没有输出变量：循环变量的初始值可为固定值或引用变量，容器内的节点可重写其取值。
  */
 import { computed, ref } from 'vue'
 import ConditionSlice from './ConditionSlice.vue'
 import FieldSlice from './FieldSlice.vue'
 import NodeSlice from './NodeSlice.vue'
 import OutputSlice from './OutputSlice.vue'
+import SectionSlice from './SectionSlice.vue'
 
 const active = ref('property')
 const model: any = defineModel()
@@ -34,7 +36,14 @@ const columns = computed(() => [{
 }, {
   prop: 'type', type: 'select', options: 'types', default: 'Integer', placeholder: '变量类型',
 }, {
-  prop: 'value', label: '初始值', placeholder: '循环变量的初始值', default: '0',
+  // 初始值来源用二选一开关，选哪种只展示对应的取值控件
+  prop: 'source', type: 'radio', options: 'variableSources', default: 'constant',
+}, {
+  prop: 'variable', type: 'variable', label: '引用变量', placeholder: '请选择变量作为初始值', default: '',
+  when: (item: any) => 'variable' === item.source,
+}, {
+  prop: 'value', label: '固定值', placeholder: '初始值，如 0', default: '',
+  when: (item: any) => 'variable' !== item.source,
 }])
 </script>
 
@@ -51,45 +60,32 @@ const columns = computed(() => [{
             show-icon
             title="容器内暂无节点，把需要重复执行的节点拖入容器内部即可" />
         </el-form-item>
-        <el-form-item label="" class="title">循环变量</el-form-item>
-        <el-form-item label="">
-          <FieldSlice v-model="model.data.variables" :columns="columns" collapsible add-text="添加循环变量" />
-        </el-form-item>
-        <el-form-item label="" class="title">终止条件</el-form-item>
-        <el-form-item label="">
-          <ConditionSlice
-            v-model="model.data.condition"
-            :instance="$props.instance"
-            :active-item="model" />
-        </el-form-item>
-        <el-form-item label="最大循环次数">
-          <el-input-number v-model="model.data.maxIterations" :min="1" :controls="false" />
-        </el-form-item>
-        <el-form-item label="输出变量名">
-          <el-input v-model="model.data.outputName" placeholder="如 output，收集各次结果" />
-        </el-form-item>
-        <el-form-item label="">
-          <div class="loop-tips">
-            将需要重复执行的节点拖入循环容器内部，满足终止条件或达到最大次数后结束循环；
-            容器内的节点可通过
-            <em>{{ variableNames }}</em>
-            引用循环变量的当前取值
-          </div>
-        </el-form-item>
+        <SectionSlice title="循环变量">
+          <el-form-item label="">
+            <FieldSlice v-model="model.data.variables" :columns="columns" collapsible add-text="添加循环变量" />
+          </el-form-item>
+        </SectionSlice>
+        <SectionSlice title="终止条件">
+          <el-form-item label="">
+            <ConditionSlice
+              v-model="model.data.condition"
+              :instance="$props.instance"
+              :active-item="model" />
+          </el-form-item>
+          <el-form-item label="最大循环次数">
+            <el-input-number v-model="model.data.maxIterations" :min="1" :controls="false" />
+          </el-form-item>
+          <el-form-item label="">
+            <tip-text>
+              将需要重复执行的节点拖入循环容器内部，满足终止条件或达到最大次数后结束循环；
+              容器内的节点可通过
+              <em>{{ variableNames }}</em>
+              引用循环变量的当前取值，并用变量赋值节点覆盖其值
+            </tip-text>
+          </el-form-item>
+        </SectionSlice>
         <OutputSlice :data="model.data" />
       </el-form>
     </el-tab-pane>
   </el-tabs>
 </template>
-
-<style lang="scss" scoped>
-.loop-tips {
-  font-size: 12px;
-  line-height: 1.8;
-  color: var(--el-text-color-placeholder);
-  em {
-    font-style: normal;
-    color: var(--el-color-primary);
-  }
-}
-</style>

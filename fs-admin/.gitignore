@@ -31,3 +31,4 @@ coverage
 .history
 /.claude
 /.plan.md
+/.codex-fix.js

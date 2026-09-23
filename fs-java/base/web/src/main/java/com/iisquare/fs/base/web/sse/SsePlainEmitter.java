@@ -94,9 +94,17 @@ public class SsePlainEmitter {
     }
 
     public SsePlainEmitter send(SseEmitter.SseEventBuilder builder) {
+        /**
+         * 推送失败不能中断业务执行：客户端/网关断开后 emitter 已 complete，
+         * 再 send 会抛 IllegalStateException（响应已完成）或 IOException（连接已断开），
+         * 若让它冒出去会中断正在运行的编排（会话消息与运行日志都写不下来），这里一律跳过
+         */
+        if (!running.get()) return this;
         try {
             emitter.send(builder);
-        } catch (IOException ignored) {}
+        } catch (Exception ignored) {
+            running.set(false);
+        }
         return this;
     }
 

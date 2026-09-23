@@ -53,6 +53,10 @@ export const layouts = [{
     path: '/bi/olap/sql',
     meta: { title: 'SQL查询', fit: true, permit: ['bi:olap:'] },
     component: () => import('@/views/bi/olap/sql.vue')
+  }, {
+    path: '/bi/monitor/queryLog',
+    meta: { title: '查询日志', permit: ['bi:dataQueryLog:'] },
+    component: () => import('@/views/bi/monitor/queryLog.vue')
   }]
 }]
 

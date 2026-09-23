@@ -339,8 +339,8 @@ const handlePlan = () => { router.push('/kg/modeling/schema') }
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh()" :loading="loading" />
-        <TableColumnSetting v-if="kind === 'CONSTRAINT'" v-model="constraintColumns" :table="tableRef" />
-        <TableColumnSetting v-else v-model="indexColumns" :table="tableRef" />
+        <TableColumnSetting v-if="kind === 'CONSTRAINT'" v-model="constraintColumns" :table="tableRef" :loading="loading" />
+        <TableColumnSetting v-else v-model="indexColumns" :table="tableRef" :loading="loading" />
       </el-space>
     </div>
     <el-table

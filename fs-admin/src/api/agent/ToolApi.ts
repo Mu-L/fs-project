@@ -16,4 +16,34 @@ export default {
   mcpSync (param: any, tips = {}) {
     return base.post('/tool/mcpSync', param, tips)
   },
+  /**
+   * 工具方法清单：后端解析后落库缓存，支持单个 id 或批量 ids
+   */
+  methods (param: any, tips = {}) {
+    return base.post('/tool/methods', param, tips)
+  },
+  /**
+   * 解析预览：解析未保存的工具配置，返回方法清单但不落库
+   */
+  parse (param: any, tips = {}) {
+    return base.post('/tool/parse', param, tips)
+  },
+  /**
+   * 重新解析：按已保存工具的配置重解析并落库
+   */
+  parseSource (param: any, tips = {}) {
+    return base.post('/tool/parseSource', param, tips)
+  },
+  /**
+   * 方法测试：按工具配置真正发起一次调用（MCP tools/call 或 OpenAPI 请求）
+   */
+  test (param: any, tips = {}) {
+    return base.post('/tool/test', param, tips)
+  },
+  /**
+   * 方法维护：启用 / 停用与排序（描述与参数由解析结果决定）
+   */
+  methodSave (param: any, tips = {}) {
+    return base.post('/tool/methodSave', param, tips)
+  },
 }

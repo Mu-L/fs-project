@@ -14,14 +14,17 @@ export interface VariableGroup {
   variables: VariableItem[]
 }
 
+/**
+ * 系统变量：只放无法从节点取到的运行上下文。
+ * 用户输入（query）与用户文件（files）属于开始节点自身，直接引用开始节点的输出即可，不在这里重复列出。
+ */
 const sysVariables: VariableItem[] = [
-  { value: 'sys.query', name: 'query', label: '用户输入', type: 'String', description: '用户输入内容' },
-  { value: 'sys.files', name: 'files', label: '用户文件', type: 'Array<File>', description: '用户上传的文件' },
   { value: 'sys.appId', name: 'appId', label: '应用标识', type: 'String', description: '当前应用标识' },
   { value: 'sys.userId', name: 'userId', label: '用户标识', type: 'String', description: '当前用户标识' },
   { value: 'sys.userName', name: 'userName', label: '用户名称', type: 'String', description: '当前用户名称' },
   { value: 'sys.conversationId', name: 'conversationId', label: '会话标识', type: 'String', description: '当前会话标识' },
-  { value: 'sys.time', name: 'time', label: '当前时间', type: 'String', description: '当前时间' },
+  { value: 'sys.datetime', name: 'datetime', label: '当前时间', type: 'String', description: '当前时间（yyyy-MM-dd HH:mm:ss，东八区）' },
+  { value: 'sys.date', name: 'date', label: '当前日期', type: 'String', description: '当前日期（yyyy-MM-dd，东八区）' },
 ]
 
 /** 变量的展示名称：标题名称优先，未配置时回落到变量名称 */
@@ -87,15 +90,12 @@ export const parseTriggerWord = (line: string, ch: number, trigger = '/') => {
  * 迭代/循环的容器内变量（元素、索引、循环变量）仅对容器自身与其内部的节点可见
  * @param instance 画布实例（X6Container 暴露的 flow）
  * @param activeItem 当前激活的节点，用于排除自身
+ * @param inner 只列出当前节点内部的节点变量（迭代/循环容器收集输出时用），默认 false
  */
-export const variableGroups = (instance: any, activeItem: any = {}): VariableGroup[] => {
-  const result: VariableGroup[] = [{
-    label: '系统变量',
-    variables: sysVariables.map(item => Object.assign({}, item)),
-  }]
+export const variableGroups = (instance: any, activeItem: any = {}, inner = false): VariableGroup[] => {
+  const cell: any = instance?.flow?.graph?.getCellById?.(activeItem?.id)
   // 容器作用域链（由内到外），用于判断容器内变量的可见性；节点尚未进入画布时不做限制
   const scopes: any = (() => {
-    const cell: any = instance?.flow?.graph?.getCellById?.(activeItem?.id)
     if (!cell) return null
     const ids: string[] = []
     let parent: any = cell.getParent?.()
@@ -105,8 +105,26 @@ export const variableGroups = (instance: any, activeItem: any = {}): VariableGro
     }
     return ids
   })()
+  // 只列出容器内部（含多层嵌套）的节点变量；节点尚未进入画布时不做限制
+  const onlyInner = Boolean(inner && cell)
+  const innerIds: string[] = (() => {
+    if (!onlyInner) return []
+    const ids: string[] = []
+    const walk = (parent: any) => (parent.getChildren?.() ?? []).forEach((child: any) => {
+      ids.push(child.id)
+      walk(child)
+    })
+    walk(cell)
+    return ids
+  })()
+  // 容器只收集内部节点的输出，系统变量不参与
+  const result: VariableGroup[] = onlyInner ? [] : [{
+    label: '系统变量',
+    variables: sysVariables.map(item => Object.assign({}, item)),
+  }]
   const nodes: any[] = instance?.flow?.graph?.getNodes?.() ?? []
   nodes.forEach((node: any) => {
+    if (onlyInner && innerIds.indexOf(node.id) < 0) return
     const data = node.getData() ?? {}
     if (!DesignUtil.widgetByType(data.type, config)) return
     const self = node.id === activeItem?.id

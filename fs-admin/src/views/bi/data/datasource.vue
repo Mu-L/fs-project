@@ -152,8 +152,8 @@ const handleTest = () => {
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
-        <TableSort v-model="filters.sort" :columns="columns" :sortable="config.sorts" @change="handleRefresh(true, true)" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
+        <TableSort v-model="filters.sort" :columns="columns" :sortable="config.sorts" :loading="loading" @change="handleRefresh(true, true)" />
       </el-space>
     </div>
     <el-table
@@ -178,7 +178,7 @@ const handleTest = () => {
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
   <el-drawer v-model="infoVisible" :title="'信息查看 - ' + form.id" size="60%">
     <el-form :model="form" label-width="auto">

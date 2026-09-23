@@ -1068,7 +1068,7 @@ onMounted(() => {
             </el-empty>
           </template>
         </el-table>
-        <TablePagination v-model="pagination" @change="refresh()" />
+        <TablePagination v-model="pagination" :loading="loading" @change="refresh()" />
       </template>
         </el-scrollbar>
       </el-splitter-panel>

@@ -4,6 +4,7 @@
  *
  * @v-model  {ColumnConfig[]} 列配置数组（双向绑定主值）
  * @prop     {TableInstance}  table  - el-table 实例，通过 v-model:table 传入
+ * @prop     {Boolean}        loading - 表格加载中状态，加载中时禁用列设置
  *
  * @emits {Function} change - 确认设置变更时触发
  *
@@ -18,6 +19,7 @@ import TreeUtil from '@/utils/TreeUtil';
 
 const model = defineModel()
 const table = defineModel('table', { type: Object as PropType<TableInstance>, required: false })
+const loading = defineModel('loading', { type: Boolean, default: false })
 const emit = defineEmits(['change'])
 
 const props = defineProps({
@@ -92,14 +94,14 @@ onMounted(() => {
 
 <template>
   <el-dropdown ref="dropdown" placement="bottom-end" trigger="click" popper-class="fs-table-dropdown">
-    <el-button :icon="ElementPlusIcons.Operation" :circle="!props.text" :text="props.text" title="设置表头列" />
+    <el-button :icon="ElementPlusIcons.Operation" :circle="!props.text" :text="props.text" title="设置表头列" :loading="loading" />
     <template #dropdown>
       <el-space class="header flex-end" spacer="/">
         <el-button link @click="tree?.setCheckedKeys(treeCheckedKeys = TreeUtil.ids(treeData))">全选</el-button>
         <el-button link @click="tree?.setCheckedKeys(treeCheckedKeys = DataUtil.removeArrayItem(TreeUtil.ids(treeData), treeCheckedKeys))">反选</el-button>
         <el-button link @click="handleFixed">取消固定</el-button>
       </el-space>
-      <div class="tree-body">
+      <el-scrollbar class="tree-body" max-height="320px">
         <el-tree
           ref="tree"
           :data="treeData"
@@ -122,7 +124,7 @@ onMounted(() => {
             </div>
           </template>
         </el-tree>
-      </div>
+      </el-scrollbar>
       <el-space class="footer flex-center" size="large">
         <el-button type="primary" size="small" @click="handleSubmit">确认</el-button>
         <el-button type="warning" size="small" @click="handleReset">重置</el-button>
@@ -147,8 +149,14 @@ onMounted(() => {
 }
 .tree-body {
   max-height: 320px;
-  overflow-y: auto;
   padding: 4px 0;
+  box-sizing: border-box;
+}
+.tree-body :deep(.el-scrollbar__view) {
+  padding: 0 2px;
+}
+.tree-body :deep(.el-tree) {
+  background: transparent;
 }
 .tree-item {
   flex: 1;

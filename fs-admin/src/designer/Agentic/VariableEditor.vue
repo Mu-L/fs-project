@@ -11,6 +11,7 @@
  * @prop {Number} height      - 编辑器高度(px)
  * @prop {Number} fontSize    - 编辑器字号(px)，默认 12，比属性面板正文更紧凑
  * @prop {Boolean} resizable  - 是否允许拖拽底部调整高度，默认 true
+ * @prop {Boolean} single     - 单行精简模式：高度固定一行、不换行、不可拖拽（窄面板里的短内容用）
  * @prop {String} mode        - 编辑器语法模式
  * @prop {String} placeholder - 空白占位提示文字
  */
@@ -27,6 +28,7 @@ const {
   height = 200,
   fontSize = 12,
   resizable = true,
+  single = false,
   mode = 'null',
   placeholder = '',
   lineNumbers = false,
@@ -36,6 +38,7 @@ const {
   height?: number,
   fontSize?: number,
   resizable?: boolean,
+  single?: boolean,
   mode?: string,
   placeholder?: string,
   lineNumbers?: boolean,
@@ -119,9 +122,12 @@ const keys = {
     return true
   },
   Enter: () => {
-    if (!panelVisible.value) return false
-    pickerRef.value?.pickActive()
-    return true
+    if (panelVisible.value) {
+      pickerRef.value?.pickActive()
+      return true
+    }
+    // 单行模式下回车不换行，其余情况交回编辑器默认行为
+    return single
   },
   Esc: () => {
     if (!panelVisible.value) return false
@@ -174,17 +180,19 @@ const insert = (reference: string) => {
   model.value = `${model.value ?? ''}${text}`
 }
 
-/** 复制当前内容 */
+/**
+ * 复制当前内容
+ * @returns {Promise<Boolean>} 是否复制成功（内容为空或失败时返回 false）
+ */
 const copy = () => {
   const text = String(model.value ?? '')
   if (!text) {
     ElMessage.warning('内容为空，无可复制内容')
-    return
+    return Promise.resolve(false)
   }
-  FormUtil.copyToClipboard(text).then(() => {
-    ElMessage.success('已复制到剪贴板')
-  }).catch(() => {
+  return FormUtil.copyToClipboard(text).then(() => true).catch(() => {
     ElMessage.error('复制失败，请手动选择复制')
+    return false
   })
 }
 
@@ -192,14 +200,17 @@ defineExpose({ insert, copy })
 </script>
 
 <template>
-  <div ref="rootRef" class="variable-editor">
+  <div ref="rootRef" class="variable-editor" :class="{ 'variable-editor--single': single }">
     <code-editor
       ref="editorRef"
       v-model="model"
       :mode="mode"
-      :height="height"
+      :height="single ? 38 : height"
       :font-size="fontSize"
-      :resizable="resizable"
+      font-family="var(--el-font-family)"
+      :line-height="single ? 1.8 : 1.5"
+      :resizable="single ? false : resizable"
+      :line-wrapping="!single"
       :line-numbers="lineNumbers"
       :placeholder="placeholder"
       trigger="/"
@@ -227,6 +238,36 @@ defineExpose({ insert, copy })
 <style lang="scss" scoped>
 .variable-editor {
   width: 100%;
+  /**
+   * 单行精简模式：不换行、不出现滚动条，内容超出时随光标自动横向滚动，
+   * 视觉上就是一个普通的单行输入框（overflow:hidden 仍允许程序化滚动）
+   */
+  &--single {
+    /* 行高略大于变量标签（18px），标签在行盒里有富余空间，视觉上垂直居中且不被裁切 */
+    :deep(.CodeMirror) {
+      /* 左右内边距放在编辑器外层：横向滚动时留白固定，长内容不会贴到两边的边框 */
+      padding: 0 12px;
+    }
+    :deep(.CodeMirror-lines) {
+      /* 左右交给外层控制，这里只保留上下内边距（左右再用 CodeMirror 行自身的 4px） */
+      padding: 8px 0;
+    }
+    :deep(.CodeMirror-scroll) {
+      /**
+       * 去掉 CodeMirror 为滚动条预留的右侧外扩（margin-right: -50px）：
+       * 文字改为在内容区右边缘截断，右留白就固定可见，不会随着内容变长贴到边框
+       */
+      margin-right: 0 !important;
+      overflow: hidden !important;
+    }
+    :deep(.CodeMirror-hscrollbar),
+    :deep(.CodeMirror-vscrollbar) {
+      display: none !important;
+    }
+    :deep(.cm-token) {
+      vertical-align: middle;
+    }
+  }
 }
 .variable-editor__panel {
   position: fixed;

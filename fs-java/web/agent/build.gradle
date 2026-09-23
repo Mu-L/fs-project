@@ -4,6 +4,11 @@ dependencies {
     implementation project(':base:jpa')
     implementation project(':base:elasticsearch')
     implementation group: 'org.springframework.ai', name: 'spring-ai-starter-mcp-server-webmvc', version: '1.1.8'
+    implementation group: 'io.swagger.parser.v3', name: 'swagger-parser', version: '2.1.22'
+    // 代码执行节点：ScriptEngineManager 需要独立的 JS 引擎（JDK 15 起已移除内置 Nashorn）
+    implementation group: 'org.openjdk.nashorn', name: 'nashorn-core', version: '15.4'
+    // 模板转换节点：真正的 Jinja2 渲染（占位符替换无法支持条件与循环语法）
+    implementation group: 'com.hubspot.jinjava', name: 'jinjava', version: '2.7.2'
     implementation("org.apache.poi:poi:5.5.1")
     implementation("org.apache.poi:poi-ooxml:5.5.1")
     implementation("org.apache.poi:poi-scratchpad:5.5.1") // 旧版 doc/xls/ppt (OLE2)

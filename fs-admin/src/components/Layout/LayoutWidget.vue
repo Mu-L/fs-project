@@ -122,10 +122,11 @@ onMounted(() => {
     padding: 0 8px;
     box-sizing: border-box;
     font-size: 12px;
-    color: #333;
+    color: var(--el-text-color-primary);
     cursor: move;
-    background: #f4f6fc;
-    border: 1px solid #f4f6fc;
+    /* 与属性面板的分组卡片同一套语言：灰底之上的白色块，常态不描边，悬停才用主色虚线提示可拖拽 */
+    background: var(--fs-panel-surface);
+    border: 1px solid transparent;
     border-radius: 4px;
     @include flex-start();
     gap: 6px;
@@ -155,7 +156,7 @@ onMounted(() => {
   list-style: none;
   font-size: 12px;
   color: var(--el-color-primary);
-  background: #f4f6fc;
+  background: var(--fs-panel-surface);
   border: 1px dashed var(--el-color-primary);
   border-radius: 4px;
   @include flex-start();

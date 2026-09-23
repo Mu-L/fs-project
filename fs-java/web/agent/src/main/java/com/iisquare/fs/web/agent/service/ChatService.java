@@ -37,6 +37,9 @@ public class ChatService extends ServiceBase implements DisposableBean {
     AgentService agentService;
     @Value("${rpc.lm.rest}")
     private String gatewayEndpoint; // 模型网关地址，对话经 /v1/chat/completions 转发
+    /** 模型网关认证密钥：配置文件 fs.agent.token，整个 agent 服务共用；应用上配置的认证标识优先 */
+    @Value("${fs.agent.token:}")
+    private String gatewayToken;
 
     @Override
     public void destroy() throws Exception {
@@ -154,7 +157,9 @@ public class ChatService extends ServiceBase implements DisposableBean {
         json.replace("messages", messages);
         String url = gatewayEndpoint + "/v1/chat/completions";
         HttpPost http = new HttpPost(url);
-        http.addHeader("Authorization", "Bearer " + agent.at("/token").asText());
+        // 认证密钥：应用上配置的认证标识优先，未配置时用服务级 fs.agent.token
+        String token = agent.at("/token").asText("");
+        http.addHeader("Authorization", "Bearer " + (DPUtil.empty(token) ? gatewayToken : token));
         http.addHeader("Content-Type", "application/json;charset=" + charset.name());
         http.setEntity(new StringEntity(json.toString(), charset));
         return http;

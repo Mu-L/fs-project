@@ -14,9 +14,9 @@ spring:
           prompt: true
           completion: true
 fs:
-  lm:
-    token: sk-just-for-knowledge-dev
   agent:
+    # 模型网关认证密钥：大语言模型等节点调用模型网关时使用，整个 agent 服务共用
+    token: sk-just-for-knowledge-dev
     image:
       expire: 1800000
       placeholder: /images/loading.svg

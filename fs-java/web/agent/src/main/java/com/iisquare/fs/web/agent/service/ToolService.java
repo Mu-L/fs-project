@@ -32,6 +32,8 @@ public class ToolService extends JPAServiceBase {
     DefaultRbacService rbacService;
     @Autowired
     Configuration configuration;
+    @Autowired
+    ToolMethodService toolMethodService;
 
 
     @Override
@@ -101,6 +103,8 @@ public class ToolService extends JPAServiceBase {
         info.setStatus(status);
         info.setDescription(DPUtil.parseString(param.get("description")));
         info = save(toolDao, info, rbacService.uid(request));
+        // 保存后立即按最新配置解析方法并落库缓存，方法行按 toolId + name upsert
+        toolMethodService.sync(info, rbacService.uid(request));
         return ApiUtil.result(0, null, info);
     }
 
@@ -122,6 +126,12 @@ public class ToolService extends JPAServiceBase {
         if (!DPUtil.empty(args.get("withRoles"))) {
             rbacService.fillInfos(rows);
         }
+        if (!DPUtil.empty(args.get("withMethodCount"))) {
+            for (JsonNode row : rows) {
+                int toolId = row.at("/id").asInt(0);
+                ((ObjectNode) row).put("methodCount", toolId > 0 ? toolMethodService.all(toolId).size() : 0);
+            }
+        }
         return result;
     }
 
@@ -139,7 +149,25 @@ public class ToolService extends JPAServiceBase {
     }
 
     public boolean remove(List<Integer> ids) {
+        // 工具删除时连同其方法一起清理，避免残留方法行被引用
+        ids.forEach(id -> toolMethodService.removeByToolId(id));
         return remove(toolDao, ids);
+    }
+
+    /**
+     * 重新解析：按已保存工具的配置重解析方法并落库（存量工具或内容变更后手动触发）
+     */
+    public Map<String, Object> parseSource(Map<?, ?> param, HttpServletRequest request) {
+        Tool info = info(DPUtil.parseInt(param.get("id")));
+        if (null == info) return ApiUtil.result(1404, "工具不存在", null);
+        return toolMethodService.sync(info, rbacService.uid(request));
+    }
+
+    /**
+     * 方法维护：启用 / 停用与排序（描述与参数由解析结果决定）
+     */
+    public Map<String, Object> saveMethod(Map<?, ?> param, HttpServletRequest request) {
+        return toolMethodService.save(param, rbacService.uid(request));
     }
 
     public Map<String, Object> mcpSync(Map<String, Object> param) {

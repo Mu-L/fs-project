@@ -191,7 +191,7 @@ INSERT INTO `fs_member_menu` VALUES (163,'索引管理','知识图谱:本体建�
 INSERT INTO `fs_member_menu` VALUES (164,'约束管理','知识图谱:本体建模:约束管理',305,152,'','/kg/modeling/constraints','',0,1,'',1754041278040,1,1789184250252,1);
 INSERT INTO `fs_member_menu` VALUES (167,'用户积分','大模型:运营监控:用户积分',304,146,'','/lm/operation/credit','',100,1,'',1755586213838,1,1778483267789,1);
 INSERT INTO `fs_member_menu` VALUES (169,'安全围栏','大模型:安全围栏',304,0,'layout.captcha','/lm/security','',100,1,'',1755586253459,1,1778290146338,1);
-INSERT INTO `fs_member_menu` VALUES (172,'供应商配置','智能体:供应商配置',308,0,'','/lm/model/provider','',0,1,'',1755596210727,1,1789352965028,1);
+INSERT INTO `fs_member_menu` VALUES (172,'对话历史','智能体:智能体:对话历史',308,406,'','/agent/agentic/chat','',0,1,'',1755596210727,1,1789868563711,1);
 INSERT INTO `fs_member_menu` VALUES (175,'采集配置','数据采集:采集配置',26,0,'Setting','/spider/setting','',0,1,'',1764317298298,1,1764635121792,1);
 INSERT INTO `fs_member_menu` VALUES (176,'模板管理','数据采集:采集配置:模板管理',26,175,'','/spider/setting/template','',0,1,'',1764317331167,1,1764635150816,1);
 INSERT INTO `fs_member_menu` VALUES (177,'采集调度','数据采集:采集调度',26,0,'Connection','/spider/schedule','',0,1,'',1764317475890,1,1764726988239,1);
@@ -220,17 +220,21 @@ INSERT INTO `fs_member_menu` VALUES (200,'图谱探索','知识图谱:知识检�
 INSERT INTO `fs_member_menu` VALUES (202,'抽取工作台','知识图谱:知识抽取:抽取工作台',305,159,'','/kg/extraction/workbench','',1,1,'',1789200000001,1,1789200000001,1);
 INSERT INTO `fs_member_menu` VALUES (401,'模型对话','智能体:模型对话',308,0,'ChatLineRound','/agent/chat','',100,1,'',1740451465910,1,1778483125800,1);
 INSERT INTO `fs_member_menu` VALUES (402,'模型调试','智能体:模型对话:模型调试',308,401,'','/agent/chat/demo','',0,1,'',1740451485129,1,1741574599116,1);
-INSERT INTO `fs_member_menu` VALUES (403,'对话历史','智能体:模型对话:对话历史',308,401,'','/agent/chat/history','',0,1,'',1741574566694,1,1741574566694,1);
-INSERT INTO `fs_member_menu` VALUES (404,'模型对话','智能体:模型对话:模型对话',308,401,'','/agent/chat/dialog','',100,1,'',1741574622733,1,1749000980826,1);
+INSERT INTO `fs_member_menu` VALUES (403,'运行日志','智能体:智能体:运行日志',308,406,'','/agent/agentic/log','',0,1,'',1741574566694,1,1789866269969,1);
+INSERT INTO `fs_member_menu` VALUES (404,'流程对话','智能体:智能体:流程对话',308,406,'','/agent/agentic/dialog','',100,1,'',1741574622733,1,1790042270250,1);
 INSERT INTO `fs_member_menu` VALUES (405,'模型对比','智能体:模型对话:模型对比',308,401,'','/agent/chat/compare','',90,1,'',1741574675468,1,1741574675468,1);
 INSERT INTO `fs_member_menu` VALUES (406,'智能体','智能体:智能体',308,0,'ai.robot','/agent/agentic','',100,1,'',1755586084051,1,1755650248787,1);
-INSERT INTO `fs_member_menu` VALUES (407,'应用管理','智能体:智能体:应用管理',308,406,'','/agent/agentic/list','',0,1,'',1755586335268,1,1755596217696,1);
+INSERT INTO `fs_member_menu` VALUES (407,'流程编排','智能体:智能体:流程编排',308,406,'','/agent/agentic/list','',0,1,'',1755586335268,1,1789718173564,1);
 INSERT INTO `fs_member_menu` VALUES (408,'知识库','智能体:知识库',308,0,'Collection','/agent/knowledge','',100,1,'',1755586105626,1,1755650342585,1);
 INSERT INTO `fs_member_menu` VALUES (409,'知识管理','智能体:知识库:知识管理',308,408,'','/agent/knowledge/list','',0,1,'',1755586375605,1,1755586375605,1);
 INSERT INTO `fs_member_menu` VALUES (410,'知识召回','智能体:知识库:知识召回',308,408,'','/agent/knowledge/recall','',0,1,'',1783581277290,1,1783581277290,1);
 INSERT INTO `fs_member_menu` VALUES (411,'插件管理','智能体:插件管理',308,0,'ai.tool','/agent/plugin','',100,1,'',1755586228750,1,1778289625904,1);
 INSERT INTO `fs_member_menu` VALUES (412,'工具管理','智能体:插件管理:工具管理',308,411,'','/agent/plugin/tool','',0,1,'',1755596243894,1,1784530237222,1);
 INSERT INTO `fs_member_menu` VALUES (413,'技能管理','智能体:插件管理:技能管理',308,411,'','/agent/plugin/skill','',0,1,'',1755596261141,1,1784530246695,1);
+INSERT INTO `fs_member_menu` VALUES (414,'系统配置','智能体:系统配置',308,0,'Setting','/agent/setting','',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_menu` VALUES (415,'运行状态','智能体:系统配置:运行状态',308,414,'','/agent/setting/state','',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_menu` VALUES (416,'运行监控','商业智能:运行监控',31,0,'Stamp','/bi/monitor','',0,1,'',1789948800000,1,1789972930606,1);
+INSERT INTO `fs_member_menu` VALUES (417,'查询日志','商业智能:运行监控:查询日志',31,416,'','/bi/monitor/queryLog','',0,1,'',1789948800000,1,1789948800000,1);
 /*!40000 ALTER TABLE `fs_member_menu` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -579,6 +583,10 @@ INSERT INTO `fs_member_resource` VALUES (420,'技能','智能体:技能',308,0,'
 INSERT INTO `fs_member_resource` VALUES (421,'添加','智能体:技能:添加',308,420,'agent','skill','add',0,1,'',1755651161148,1,1784530212061,1);
 INSERT INTO `fs_member_resource` VALUES (422,'修改','智能体:技能:修改',308,420,'agent','skill','modify',0,1,'',1755651167570,1,1784530220567,1);
 INSERT INTO `fs_member_resource` VALUES (423,'删除','智能体:技能:删除',308,420,'agent','skill','delete',0,1,'',1755651173304,1,1784530215818,1);
+INSERT INTO `fs_member_resource` VALUES (424,'维护','智能体:维护',308,0,'agent','maintain','',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_resource` VALUES (425,'重建检索块','智能体:维护:重建检索块',308,424,'agent','maintain','reindexChunk',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_resource` VALUES (426,'查询日志','商业智能:查询日志',31,0,'bi','dataQueryLog','',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_resource` VALUES (427,'删除','商业智能:查询日志:删除',31,426,'bi','dataQueryLog','delete',0,1,'',1789948800000,1,1789948800000,1);
 /*!40000 ALTER TABLE `fs_member_resource` ENABLE KEYS */;
 UNLOCK TABLES;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
@@ -591,4 +599,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-09-16 10:52:42
+-- Dump completed on 2026-09-22  9:57:57

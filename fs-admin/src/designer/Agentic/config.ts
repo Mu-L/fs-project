@@ -1,5 +1,6 @@
 import DesignUtil from '@/utils/DesignUtil'
 import SwitchLayout from '@/designer/X6/switch'
+import AgenticUtil from '@/utils/AgenticUtil'
 
 const config: any = {}
 
@@ -31,8 +32,9 @@ const DefaultOptions = () => {
 const StartOptions = () => {
   return {
     // 固定输入：用户输入与文件列表，默认启用（勾选），不可删除
-    query: { enabled: true, maxLength: 256, description: '用户输入内容' },
-    fileIds: { enabled: true, maxCount: 3, fileTypes: [], description: '用户上传的文件标识列表' },
+    query: { enabled: true, maxLength: 25600, description: '用户输入内容' },
+    // 文件列表为文件信息数组：每项是文件存储服务返回的文件ID、文件名、文件类型等，不是前端的 File 对象
+    files: { enabled: true, maxCount: 3, fileTypes: [], description: '用户上传的文件列表，含文件存储服务返回的文件ID、文件名、文件类型等信息' },
     // 自定义参数：类型见 inputTypes（文本、段落、数值等）
     variables: [],
   }
@@ -54,56 +56,21 @@ const mergeOptions = (...sources: any[]) => {
 }
 
 /**
- * 开始节点的输入清单：固定输入（query 用户输入、fileIds 文件列表）默认启用，
- * 自定义参数来自 variables，调试运行与下游变量引用共用该清单。
+ * 开始节点的输入清单：实现放在 AgenticUtil，与对话页「参数配置」表单共用同一份口径
  */
-const StartInputs = (data: any) => {
-  const items: any[] = []
-  const query = data?.query ?? {}
-  if (false !== query.enabled) {
-    items.push({
-      name: 'query',
-      label: '用户输入',
-      type: 'String',
-      description: query.description ?? '用户输入内容',
-      maxLength: query.maxLength ?? 256,
-    })
-  }
-  const fileIds = data?.fileIds ?? {}
-  if (false !== fileIds.enabled) {
-    items.push({
-      name: 'fileIds',
-      label: '文件列表',
-      type: 'Array<File>',
-      description: fileIds.description ?? '用户上传的文件标识列表',
-      maxCount: fileIds.maxCount ?? 3,
-      fileTypes: fileIds.fileTypes ?? [],
-    })
-  }
-  ;(data?.variables ?? []).forEach((item: any) => {
-    if (!item?.name) return
-    items.push({
-      name: item.name,
-      // 标题名称仅用于展示，为空时回落到变量名称
-      label: item.label || item.name,
-      type: item.type ?? 'String',
-      description: item.description,
-      required: true === item.required,
-    })
-  })
-  return items
-}
+const StartInputs = (data: any) => AgenticUtil.startInputs(data)
 
 /**
  * 兼容历史数据：早期版本把用户输入与文件列表混在 variables 数组中，
- * 现拆分为固定输入 query、fileIds，variables 仅保留自定义参数。
+ * 现拆分为固定输入 query、files，variables 仅保留自定义参数；
+ * 文件列表由 fileIds（文件标识列表）改为 files（文件存储服务返回的文件信息数组），原配置沿用。
  */
 const StartRepair = (data: any) => {
   if (!data) return data
   const defaults = StartOptions()
   const variables: any[] = Array.isArray(data.variables) ? data.variables : []
   let legacyQuery: any = null
-  let legacyFileIds: any = null
+  let legacyFiles: any = null
   const rest: any[] = []
   variables.forEach((item: any) => {
     if (!item?.name) return
@@ -112,7 +79,7 @@ const StartRepair = (data: any) => {
       return
     }
     if (['file', 'files', 'fileIds'].indexOf(item.name) !== -1) {
-      legacyFileIds = item
+      legacyFiles = item
       return
     }
     rest.push(item)
@@ -121,11 +88,13 @@ const StartRepair = (data: any) => {
     maxLength: legacyQuery?.maxLength,
     description: legacyQuery?.description,
   })
-  data.fileIds = mergeOptions(defaults.fileIds, data.fileIds, {
-    maxCount: legacyFileIds?.maxCount,
-    fileTypes: legacyFileIds?.fileTypes,
-    description: legacyFileIds?.description,
+  // 旧字段 fileIds 与 variables 中拆出的文件参数都并入 files
+  data.files = mergeOptions(defaults.files, data.files ?? data.fileIds, {
+    maxCount: legacyFiles?.maxCount,
+    fileTypes: legacyFiles?.fileTypes,
+    description: legacyFiles?.description,
   })
+  delete data.fileIds
   data.variables = rest
   return data
 }
@@ -142,15 +111,56 @@ const EndOptions = () => {
 const LLMOptions = () => {
   return {
     model: '',
+    // 温度、思考模式、思考强度各自可开关，默认不启用，关闭时该参数不参与请求
+    temperatureEnabled: false,
     temperature: 0.7,
-    maxTokens: 0,
-    topP: 1,
+    // 思考模式与思考强度（思考强度仅在开启思考时可配）
+    thinkModeEnabled: false,
+    thinkMode: 'auto',
+    thinkEffortEnabled: false,
+    thinkEffort: 'medium',
+    // AGENT 策略：无 / ReAct / FunctionCalling
+    agentStrategy: 'none',
+    // ReAct 的最大迭代次数：模型返回工具调用就执行并回填上下文继续推理，
+    // 直到给出非工具调用的回复或达到该上限（达到上限按节点异常处理）；FunctionCalling 只执行一轮
+    maxIterations: 5,
+    // 系统指令与用户输入
     systemPrompt: '',
     prompt: '',
-    context: { enabled: false, variable: '' },
-    memory: { enabled: false, window: 10 },
-    vision: { enabled: false, variable: '' },
-    structured: { enabled: false, schema: '' },
+    /**
+     * 工具列表：{ id, toolId, toolName, method, enabled, args }
+     * - method 为工具暴露的方法名（工具与方法由后端解析落库，见 tool.ts）
+     * - args 为该方法的执行变量绑定：`{ auto: true }` 由模型决定；
+     *   `{ auto: false, value }` 手工指定，内容可混排固定字符串与变量占位符，由后端按内容解析
+     * - 对象参数（如 body）按字段绑定：`{ source: 'fields', fields: { 字段名: 绑定 } }`，未配置字段仍由模型决定
+     */
+    tools: [],
+    // 记忆：范围 conversation=完整对话（多轮对话需要）/ user=仅用户提问；工具链开启后历史轮次的工具调用加入上下文
+    memory: { enabled: true, window: 10, scope: 'conversation', toolchain: false },
+    // 多模态输入参数：{ name, type, variable }
+    multimodalEnabled: false,
+    multimodal: [],
+  }
+}
+
+const ChartOptions = () => {
+  return {
+    model: '',
+    // 温度、思考模式与思考强度各自可开关，默认不启用，关闭时该参数不参与请求
+    temperatureEnabled: false,
+    temperature: 0.7,
+    thinkModeEnabled: false,
+    thinkMode: 'auto',
+    thinkEffortEnabled: false,
+    thinkEffort: 'medium',
+    // 图表类型、展示数据与图表说明都由模型按用户问题与大语言模型本轮记录自动决定，节点不需要额外配置；
+    // 默认读取开始节点的用户输入与上游大语言模型本轮的回复、工具调用结果，其余上游节点仅在缺少模型节点时兜底；
+    // 这里只保留系统提示词（补充统计口径等要求）与多模态输入参数，与其它模型节点保持一致
+    systemPrompt: '',
+    // 记忆：图表只根据用户问题和本轮数据归纳，默认只带历史里的用户提问
+    memory: { enabled: true, window: 10, scope: 'user', toolchain: false },
+    multimodalEnabled: false,
+    multimodal: [],
   }
 }
 
@@ -158,10 +168,7 @@ const KnowledgeOptions = () => {
   return {
     query: '',
     knowledgeIds: [],
-    strategy: 'semantic',
-    topK: 3,
-    score: 0.5,
-    rerank: { enabled: false, model: '', topN: 3 },
+    // 元数据过滤条件
     metadata: {},
   }
 }
@@ -169,14 +176,65 @@ const KnowledgeOptions = () => {
 const ClassifierOptions = () => {
   return {
     model: '',
+    // 温度、思考模式、思考强度各自可开关
+    temperatureEnabled: false,
+    temperature: 0.7,
+    thinkModeEnabled: false,
+    thinkMode: 'auto',
+    thinkEffortEnabled: false,
+    thinkEffort: 'medium',
+    // 输入变量与系统指令
     query: '',
-    instruction: '',
-    memory: { enabled: false, window: 10 },
+    systemPrompt: '',
+    // 记忆：分类只关心用户问题，默认只带历史里的用户提问
+    memory: { enabled: true, window: 10, scope: 'user', toolchain: false },
+    // 多模态输入参数：{ name, type, variable }
+    multimodalEnabled: false,
+    multimodal: [],
     classes: [
       { id: DesignUtil.uuid(), name: '分类一', description: '当用户的问题与分类一相关时命中' },
       { id: DesignUtil.uuid(), name: '分类二', description: '当用户的问题与分类二相关时命中' },
     ],
   }
+}
+
+/** 兼容历史数据：已配置多模态输入参数时默认启用（多模态开关是后加的，默认关闭） */
+const MultimodalRepair = (data: any) => {
+  if (!data) return data
+  if (Array.isArray(data.multimodal) && data.multimodal.length && undefined === data.multimodalEnabled) {
+    data.multimodalEnabled = true
+  }
+  return MemoryRepair(data)
+}
+
+/**
+ * 兼容历史数据：记忆范围（memory.scope）是后加字段，缺省保持原有行为（完整对话）；
+ * 没有记忆配置的模型节点（如早期的参数提取器）补一份默认配置，默认只带用户提问。
+ */
+const MemoryRepair = (data: any) => {
+  if (!data) return data
+  const memory = data.memory
+  if (!memory || 'object' !== typeof memory) {
+    data.memory = { enabled: true, window: 10, scope: 'user', toolchain: false }
+    return data
+  }
+  if (undefined === memory.enabled) memory.enabled = true
+  if (undefined === memory.window) memory.window = 10
+  if (undefined === memory.toolchain) memory.toolchain = false
+  if (undefined === memory.scope) memory.scope = 'conversation'
+  return data
+}
+
+/** 兼容历史数据：分类指令（instruction）改名为系统指令（systemPrompt） */
+const ClassifierRepair = (data: any) => {
+  if (!data) return data
+  if (undefined !== data.instruction) {
+    if (undefined === data.systemPrompt || '' === data.systemPrompt) {
+      data.systemPrompt = data.instruction
+    }
+    delete data.instruction
+  }
+  return MultimodalRepair(data)
 }
 
 const SwitchOptions = () => {
@@ -196,43 +254,123 @@ const IterationOptions = () => {
     input: '',
     itemName: 'item',
     indexName: 'index',
+    // 输出变量：容器内被收集的变量，各次迭代的取值组成输出变量名的值数组
+    outputVariable: '',
     outputName: 'output',
-    maxIterations: 10,
     parallel: false,
     parallelCount: 1,
+    // 错误处理：错误时终止 / 忽略错误并继续 / 移除错误输出（见 iterationErrorModes）
     errorMode: 'terminated',
   }
 }
 
 const LoopOptions = () => {
   return {
-    variables: [{ name: 'index', type: 'Integer', value: '0' }],
+    // 循环变量：初始值来源可为固定值或引用变量，容器内的节点可通过变量赋值覆盖其取值
+    variables: [{ name: 'index', type: 'Integer', source: 'constant', variable: '', value: '' }],
     condition: { logic: 'and', conditions: [{ variable: '', operator: 'lt', value: '10' }] },
     maxIterations: 100,
-    outputName: 'output',
   }
+}
+
+/** 兼容历史数据：循环变量的初始值来源（固定值/引用变量）是后加字段，缺省按固定值处理 */
+const LoopRepair = (data: any) => {
+  if (!data) return data
+  const variables: any[] = Array.isArray(data.variables) ? data.variables : []
+  variables.forEach((item: any) => {
+    if (undefined === item.source) item.source = 'constant'
+    if (undefined === item.variable) item.variable = ''
+  })
+  return data
 }
 
 const CodeOptions = () => {
   return {
-    language: 'python3',
-    code: CodeSamples.python3,
+    // 仅支持 NodeJS：语言固定，界面不再提供语言选择
+    language: 'nodejs',
+    code: CodeSamples.nodejs,
     inputs: [{ name: 'arg1', variable: '' }],
     outputs: [{ name: 'result', type: 'String' }],
   }
 }
 
+/** 旧版默认的 Python 示例代码：Python 已不再支持，仅用于历史数据迁移时识别没改过的默认示例 */
+const LegacyPythonSample = [
+  'def main(arg1: str) -> dict:',
+  '    return {',
+  '        "result": arg1,',
+  '    }',
+].join('\n')
+
+/** 旧版默认示例：async 函数与解构参数在服务端的 JavaScript 引擎里不可用，仅用于历史数据迁移 */
+const LegacyNodeSample = [
+  'async function main({ arg1 }) {',
+  '  return {',
+  '    result: arg1,',
+  '  }',
+  '}',
+].join('\n')
+
+/**
+ * 兼容历史数据：代码节点只支持 NodeJS。
+ * 旧数据统一改回 NodeJS；代码为空或仍是默认的 Python 示例时替换为 NodeJS 示例，自己写过的代码保留不动
+ */
+const CodeRepair = (data: any) => {
+  if (!data) return data
+  if ('nodejs' !== data.language) {
+    if (!data.code || LegacyPythonSample === data.code) data.code = CodeSamples.nodejs
+    data.language = 'nodejs'
+  }
+  // 早期默认示例用了 async 与解构参数，服务端按 JavaScript 引擎执行时不兼容，替换为新示例
+  if (LegacyNodeSample === data.code) data.code = CodeSamples.nodejs
+  return data
+}
+
 const TemplateOptions = () => {
-  return { template: '', outputName: 'output', outputType: 'String' }
+  return {
+    // 输入变量：{ name, variable }，模板里按 name 引用，不再往模板里插入占位符
+    inputs: [{ name: 'input', variable: '' }],
+    template: '',
+    outputName: 'output',
+    outputType: 'String',
+  }
 }
 
 const AggregatorOptions = () => {
   return {
-    strategy: 'first',
-    variables: [{ variable: '' }, { variable: '' }],
-    outputName: 'output',
-    outputType: 'String',
+    // 分组：每个分组产出一个变量，变量名取分组名称，组内变量按清单顺序聚合
+    groups: [{
+      id: DesignUtil.uuid(),
+      name: 'output',
+      outputType: 'String',
+      variables: [{ variable: '' }, { variable: '' }],
+    }],
   }
+}
+
+/** 兼容历史数据：聚合器由「单个输出变量」改为「分组，分组名称即输出变量名」 */
+const AggregatorRepair = (data: any) => {
+  if (!data) return data
+  if (!Array.isArray(data.groups)) {
+    const variables: any[] = Array.isArray(data.variables) ? data.variables : []
+    data.groups = [{
+      id: DesignUtil.uuid(),
+      name: data.outputName || 'output',
+      outputType: data.outputType || 'String',
+      variables: variables.length ? variables : [{ variable: '' }, { variable: '' }],
+    }]
+  }
+  // 分组上后加的字段：缺类型按文本处理，变量清单兜底为空数组
+  data.groups.forEach((group: any) => {
+    if (!group) return
+    if (undefined === group.outputType) group.outputType = 'String'
+    if (!Array.isArray(group.variables)) group.variables = []
+  })
+  delete data.strategy
+  delete data.outputName
+  delete data.outputType
+  delete data.variables
+  return data
 }
 
 const DocumentOptions = () => {
@@ -250,24 +388,100 @@ const AssignerOptions = () => {
 const ParameterOptions = () => {
   return {
     model: '',
+    // 与其它模型节点保持一致：温度、思考模式、思考强度各自可开关
+    temperatureEnabled: false,
+    temperature: 0.7,
+    thinkModeEnabled: false,
+    thinkMode: 'auto',
+    thinkEffortEnabled: false,
+    thinkEffort: 'medium',
+    // 输入变量与系统指令
     query: '',
-    instruction: '',
-    memory: { enabled: false, window: 10 },
+    systemPrompt: '',
+    // 记忆：提取器只按本轮输入提取，默认只带历史里的用户提问
+    memory: { enabled: true, window: 10, scope: 'user', toolchain: false },
+    // 多模态输入参数：{ name, type, variable }
+    multimodalEnabled: false,
+    multimodal: [],
     parameters: [{ name: 'language', type: 'String', required: true, description: '编程语言名称' }],
   }
+}
+
+/** 兼容历史数据：提取指令（instruction）改名为系统提示词（systemPrompt），与其它模型节点一致 */
+const ParameterRepair = (data: any) => {
+  if (!data) return data
+  if (undefined !== data.instruction) {
+    if (undefined === data.systemPrompt || '' === data.systemPrompt) {
+      data.systemPrompt = data.instruction
+    }
+    delete data.instruction
+  }
+  return MultimodalRepair(data)
 }
 
 const HttpOptions = () => {
   return {
     method: 'GET',
     url: '',
-    authorization: { type: 'none', apiKey: '', header: '', username: '', password: '' },
+    // 认证不单独配置：需要的令牌/密钥按请求头填写（见 HttpProperty 的「请求头」）
     headers: {},
-    params: {},
-    body: { type: 'none', json: '', form: {} },
+    // 请求参数：none / form-data / x-www-form-urlencoded / json / raw；
+    // json 与 raw 共用 content 字段（与数据接口配置的 payloadBody 一致）
+    body: { type: 'none', content: '', form: {} },
     timeout: 30,
     sslVerify: true,
   }
+}
+
+/**
+ * 兼容历史数据：
+ * 1. 不再单独配置授权认证，旧认证信息转成请求头，避免升级后请求丢掉鉴权；
+ * 2. 请求参数类型与数据接口配置对齐（form → form-data，json 与 raw 共用 content 字段）；
+ * 3. 不再有单独的查询参数，旧参数拼到请求地址上。
+ */
+const HttpRepair = (data: any) => {
+  if (!data) return data
+  // 授权认证 → 请求头
+  if (data.authorization) {
+    const auth: any = data.authorization
+    const headers: any = Object.assign({}, data.headers)
+    try {
+      if ('apiKey' === auth.type && auth.apiKey) {
+        headers[auth.header || 'X-API-Key'] = auth.apiKey
+      } else if ('bearer' === auth.type && auth.apiKey) {
+        headers['Authorization'] = 'Bearer ' + auth.apiKey
+      } else if ('basic' === auth.type) {
+        headers['Authorization'] = 'Basic ' + window.btoa(`${auth.username ?? ''}:${auth.password ?? ''}`)
+      }
+      data.headers = headers
+    } catch (error) {
+      // 账号含非 ASCII 字符时 btoa 会失败，此时保留原请求头，认证信息由使用者自行补录
+    }
+    delete data.authorization
+  }
+  // 请求体字段对齐
+  if (data.body) {
+    if ('form' === data.body.type) data.body.type = 'form-data'
+    if (undefined !== data.body.json) {
+      if (undefined === data.body.content) data.body.content = data.body.json
+      delete data.body.json
+    }
+    if (!data.body.form || 'object' !== typeof data.body.form) data.body.form = {}
+  }
+  // 查询参数 → 请求地址
+  const params: any = data.params
+  if (params && 'object' === typeof params) {
+    const query: string = Object.keys(params)
+      .filter((key: string) => key)
+      .map((key: string) => `${key}=${params[key]}`)
+      .join('&')
+    if (query) {
+      const url = String(data.url ?? '')
+      data.url = `${url}${url.indexOf('?') >= 0 ? '&' : '?'}${query}`
+    }
+  }
+  delete data.params
+  return data
 }
 
 const ListOptions = () => {
@@ -313,6 +527,18 @@ const outputs: any = {
     { name: 'text', label: '回复文本', type: 'String', description: '模型回复内容' },
     { name: 'reasoning', label: '思考过程', type: 'String', description: '模型思考过程' },
     { name: 'usage', label: '令牌用量', type: 'Object', description: '令牌用量信息' },
+    { name: 'calls', label: '工具调用', type: 'Array<Object>', description: '本轮工具调用明细（方法名、参数与返回结果），可交给「输出图表」节点归纳成图表数据' },
+  ],
+  // 输出图表：模型按内置提示词归纳出的图表定义，下游节点可引用其中任意字段
+  Chart: () => [
+    { name: 'hasChart', label: '是否有图表', type: 'Boolean', description: '本轮上下文是否产出了图表：模型判定无需绘图时为 false，可在条件分支里引用' },
+    { name: 'placeholder', label: '图表占位符', type: 'String', description: '把它插入到结束节点的回复内容里（如 正文 + {{#n1.placeholder#}} + 结尾），图表就渲染在这个位置；不引用则追加在回复末尾。它只是正文里的一行标记，不是画布位置' },
+    { name: 'type', label: '图表类型', type: 'String', description: 'bar 柱状 / line 折线 / pie 饼图 / table 表格' },
+    { name: 'title', label: '图表标题', type: 'String', description: '图表标题（统计口径）' },
+    { name: 'source', label: '数据来源', type: 'String', description: '数据来源说明' },
+    { name: 'categories', label: '分类取值', type: 'Array<Object>', description: '分类轴取值' },
+    { name: 'series', label: '系列数据', type: 'Array<Object>', description: '数值系列：{ name, data }' },
+    { name: 'text', label: '模型输出', type: 'String', description: '模型返回的原始图表定义' },
   ],
   Knowledge: () => [
     { name: 'result', label: '召回结果', type: 'Array<Object>', description: '召回结果列表' },
@@ -326,24 +552,25 @@ const outputs: any = {
   // 迭代/循环容器不再有固定入口节点：元素、索引与循环变量由容器节点自身提供，
   // 标记 scope 的条目只对容器内的节点可见（见 variable.ts）
   Iteration: (data: any) => [
-    { name: data.outputName || 'output', label: '迭代结果', type: 'Array<Object>', description: '各次迭代的输出集合' },
+    { name: data.outputName || 'output', label: '迭代结果', type: 'Array<Object>', description: '各次迭代收集的输出变量取值集合' },
     { name: data.itemName || 'item', label: '当前元素', type: 'Object', description: '当前迭代的元素', scope: true },
     { name: data.indexName || 'index', label: '当前索引', type: 'Integer', description: '当前迭代的索引', scope: true },
   ],
-  Loop: (data: any) => [
-    { name: data.outputName || 'output', label: '循环结果', type: 'Array<Object>', description: '各次循环的输出集合' },
-  ].concat((data.variables ?? []).filter((item: any) => item?.name).map((item: any) => ({
+  // 循环节点没有输出变量：循环变量即循环的状态，只对容器自身与其内部的节点可见，
+  // 内部节点可通过变量赋值覆盖其取值
+  Loop: (data: any) => (data.variables ?? []).filter((item: any) => item?.name).map((item: any) => ({
     name: item.name, label: item.label || item.name, type: item.type, description: '循环变量的当前取值', scope: true,
-  }))),
+  })),
   Code: (data: any) => (data.outputs ?? []).filter((item: any) => item?.name).map((item: any) => ({
     name: item.name, label: item.label || item.name, type: item.type,
   })),
   Template: (data: any) => [
     { name: data.outputName || 'output', label: '模板结果', type: data.outputType || 'String', description: '模板渲染结果' },
   ],
-  VariableAggregator: (data: any) => [
-    { name: data.outputName || 'output', label: '聚合结果', type: data.outputType || 'String', description: '聚合后的变量' },
-  ],
+  // 每个分组产出一个变量，变量名取分组名称，类型取分组上配置的输出类型
+  VariableAggregator: (data: any) => (data.groups ?? []).filter((group: any) => group?.name).map((group: any) => ({
+    name: group.name, label: group.name, type: group.outputType || 'String', description: '聚合后的变量',
+  })),
   DocumentExtractor: (data: any) => [
     { name: data.outputName || 'text', label: '解析文本', type: 'String', description: '文档解析出的文本' },
   ],
@@ -376,16 +603,10 @@ const outputs: any = {
 /* ------------------------------- 字典数据 ------------------------------- */
 
 const CodeSamples: any = {
-  python3: [
-    'def main(arg1: str) -> dict:',
-    '    return {',
-    '        "result": arg1,',
-    '    }',
-  ].join('\n'),
   nodejs: [
-    'async function main({ arg1 }) {',
+    'function main(args) {',
     '  return {',
-    '    result: arg1,',
+    '    result: args.arg1,',
     '  }',
     '}',
   ].join('\n'),
@@ -423,6 +644,33 @@ const fileTypes = [
   { label: '压缩包', value: 'archive' },
 ]
 
+// 大语言模型：思考模式、思考强度、AGENT 策略与多模态输入类型
+const thinkModes = [
+  { label: '自动', value: 'auto' },
+  { label: '开启', value: 'on' },
+  { label: '关闭', value: 'off' },
+]
+
+const thinkEfforts = [
+  { label: '低', value: 'low' },
+  { label: '中', value: 'medium' },
+  { label: '高', value: 'high' },
+  { label: '最高', value: 'max' },
+]
+
+const agentStrategies = [
+  { label: '无', value: 'none' },
+  { label: 'ReAct', value: 'react' },
+  { label: 'FunctionCalling', value: 'functionCalling' },
+]
+
+const multimodalTypes = [
+  { label: '图片', value: 'image' },
+  { label: '音频', value: 'audio' },
+  { label: '视频', value: 'video' },
+  { label: '文件', value: 'file' },
+]
+
 const operators = [
   { label: '存在', value: 'exists' },
   { label: '为空', value: 'empty' },
@@ -446,25 +694,22 @@ const modes = [
   { label: '对话流', value: 'chat' },
 ]
 
-const knowledgeStrategies = [
-  { label: '向量检索', value: 'semantic' },
-  { label: '全文检索', value: 'fulltext' },
-  { label: '混合检索', value: 'hybrid' },
-]
-
-const codeLanguages = [
-  { label: 'Python', value: 'python3' },
-  { label: 'NodeJS', value: 'nodejs' },
-]
-
-const aggregateStrategies = [
-  { label: '优先取第一个不为空的值', value: 'first' },
-  { label: '返回全部变量', value: 'all' },
-]
-
 const loopErrorModes = [
   { label: '终止循环', value: 'terminated' },
   { label: '继续执行', value: 'continue' },
+]
+
+// 循环变量的初始值来源：固定值（默认）或引用变量
+const variableSources = [
+  { label: '固定值', value: 'constant' },
+  { label: '引用变量', value: 'variable' },
+]
+
+// 迭代节点的错误处理：出错即终止、忽略错误继续后续迭代、把出错的迭代结果从输出数组中移除
+const iterationErrorModes = [
+  { label: '错误时终止', value: 'terminated' },
+  { label: '忽略错误并继续', value: 'continue' },
+  { label: '移除错误输出', value: 'removed' },
 ]
 
 const listLimitTypes = [
@@ -483,16 +728,12 @@ const httpMethods = [
 ]
 
 const httpBodyTypes = [
-  { label: '无', value: 'none' },
-  { label: 'JSON', value: 'json' },
-  { label: '表单', value: 'form' },
-]
-
-const httpAuthTypes = [
-  { label: '无', value: 'none' },
-  { label: 'API Key', value: 'apiKey' },
-  { label: 'Bearer', value: 'bearer' },
-  { label: 'Basic', value: 'basic' },
+  // 选项直接展示请求参数类型本身，不做中文翻译
+  { label: 'none', value: 'none' },
+  { label: 'form-data', value: 'form-data' },
+  { label: 'x-www-form-urlencoded', value: 'x-www-form-urlencoded' },
+  { label: 'json', value: 'json' },
+  { label: 'raw', value: 'raw' },
 ]
 
 const timeOperations = [
@@ -557,18 +798,25 @@ const widgets = DesignUtil.widgets([{
   name: '模型能力',
   children: [{
     type: 'LLM', label: '大语言模型', title: '调用大语言模型回答问题或处理自然语言', icon: 'ai.model',
-    shape: 'agent-node', options: LLMOptions, property: () => import('./LLMProperty.vue')
+    shape: 'agent-node', options: LLMOptions, repair: MultimodalRepair,
+    property: () => import('./LLMProperty.vue')
+  }, {
+    type: 'Chart', label: '输出图表', title: '把上游数据交给模型归纳成图表定义，随回复一起展示', icon: 'PieChart',
+    shape: 'agent-node', options: ChartOptions, repair: MultimodalRepair,
+    property: () => import('./ChartProperty.vue')
   }, {
     type: 'Knowledge', label: '知识检索', title: '从知识库中查询与用户问题相关的文本内容', icon: 'algorithm.retrieval',
     shape: 'agent-node', options: KnowledgeOptions, property: () => import('./KnowledgeProperty.vue')
   }, {
     type: 'QuestionClassifier', label: '问题分类器', title: '按分类描述定义对话的进展方式', icon: 'Guide',
-    shape: 'agent-switch', options: ClassifierOptions, property: () => import('./ClassifierProperty.vue'),
+    shape: 'agent-switch', options: ClassifierOptions, repair: ClassifierRepair,
+    property: () => import('./ClassifierProperty.vue'),
     size: (data: any) => ({ width: SwitchLayout.width, height: SwitchLayout.height(data) }),
     ports: (data: any) => SwitchLayout.ports(data),
   }, {
     type: 'ParameterExtractor', label: '参数提取器', title: '从自然语言中推理提取结构化参数', icon: 'algorithm.extraction',
-    shape: 'agent-node', options: ParameterOptions, property: () => import('./ParameterProperty.vue')
+    shape: 'agent-node', options: ParameterOptions, repair: ParameterRepair,
+    property: () => import('./ParameterProperty.vue')
   }]
 }, {
   name: '逻辑处理',
@@ -578,14 +826,15 @@ const widgets = DesignUtil.widgets([{
     size: (data: any) => ({ width: SwitchLayout.width, height: SwitchLayout.height(data) }),
     ports: (data: any) => SwitchLayout.ports(data),
   }, {
-    type: 'Iteration', label: '迭代', title: '对列表对象执行多次步骤直至输出所有结果', icon: 'RefreshRight',
+    type: 'Iteration', label: '迭代', title: '对列表对象执行多次步骤直至输出所有结果', icon: 'flow.iteration',
     shape: 'flow-subprocess', options: IterationOptions, property: () => import('./IterationProperty.vue')
   }, {
-    type: 'Loop', label: '循环', title: '循环执行一段逻辑直到满足结束条件或到达上限', icon: 'RefreshLeft',
-    shape: 'flow-subprocess', options: LoopOptions, property: () => import('./LoopProperty.vue')
+    type: 'Loop', label: '循环', title: '循环执行一段逻辑直到满足结束条件或到达上限', icon: 'flow.loop',
+    shape: 'flow-subprocess', options: LoopOptions, repair: LoopRepair, property: () => import('./LoopProperty.vue')
   }, {
-    type: 'VariableAggregator', label: '变量聚合器', title: '将多路分支的变量聚合为一个变量', icon: 'Share',
-    shape: 'agent-node', options: AggregatorOptions, property: () => import('./AggregatorProperty.vue')
+    type: 'VariableAggregator', label: '变量聚合器', title: '将多路分支的变量按分组聚合，分组名称即输出变量名', icon: 'Share',
+    shape: 'agent-node', options: AggregatorOptions, repair: AggregatorRepair,
+    property: () => import('./AggregatorProperty.vue')
   }, {
     type: 'VariableAssigner', label: '变量赋值', title: '向会话变量等可写入变量进行赋值', icon: 'flow.config',
     shape: 'agent-node', options: AssignerOptions, property: () => import('./AssignerProperty.vue')
@@ -593,10 +842,10 @@ const widgets = DesignUtil.widgets([{
 }, {
   name: '数据处理',
   children: [{
-    type: 'Code', label: '代码执行', title: '执行一段 Python 或 NodeJS 代码实现自定义逻辑', icon: 'flow.script',
-    shape: 'agent-node', options: CodeOptions, property: () => import('./CodeProperty.vue')
+    type: 'Code', label: '代码执行', title: '执行一段 JavaScript 代码实现自定义逻辑', icon: 'flow.script',
+    shape: 'agent-node', options: CodeOptions, repair: CodeRepair, property: () => import('./CodeProperty.vue')
   }, {
-    type: 'Template', label: '模板转换', title: '使用 Jinja 模板语法将数据转换为字符串', icon: 'flow.transform',
+    type: 'Template', label: '模板转换', title: '使用 Jinja2 模板语法将数据转换为字符串', icon: 'flow.transform',
     shape: 'agent-node', options: TemplateOptions, property: () => import('./TemplateProperty.vue')
   }, {
     type: 'DocumentExtractor', label: '文档提取器', title: '将用户上传的文档解析为便于理解的文本', icon: 'Document',
@@ -612,7 +861,7 @@ const widgets = DesignUtil.widgets([{
   name: '集成调用',
   children: [{
     type: 'HTTP', label: 'HTTP请求', title: '通过 HTTP 协议发送服务器请求', icon: 'Link',
-    shape: 'agent-node', options: HttpOptions, property: () => import('./HttpProperty.vue')
+    shape: 'agent-node', options: HttpOptions, repair: HttpRepair, property: () => import('./HttpProperty.vue')
   }]
 }])
 
@@ -625,19 +874,21 @@ export default Object.assign(config, {
   types,
   inputTypes,
   fileTypes,
+  thinkModes,
+  thinkEfforts,
+  agentStrategies,
+  multimodalTypes,
   startInputs: StartInputs,
   startRepair: StartRepair,
   operators,
   modes,
-  knowledgeStrategies,
-  codeLanguages,
   codeSamples: CodeSamples,
-  aggregateStrategies,
   loopErrorModes,
+  iterationErrorModes,
+  variableSources,
   listLimitTypes,
   httpMethods,
   httpBodyTypes,
-  httpAuthTypes,
   timeOperations,
   timeUnits,
   timezones,

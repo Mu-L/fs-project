@@ -16,6 +16,7 @@ import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.util.EntityUtils;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -29,11 +30,23 @@ import java.util.Map;
 public class AIService implements DisposableBean {
 
     CloseableHttpClient client;
-    final RequestConfig config;
-    @Value("${fs.lm.token}")
+    /** 请求配置在 @PostConstruct 里按注入后的配置项构建（构造阶段 @Value 还没注入） */
+    RequestConfig config;
+    /** 模型网关认证密钥：配置文件 fs.agent.token，整个 agent 服务共用 */
+    @Value("${fs.agent.token:}")
     private String gatewayToken;
     @Value("${rpc.lm.rest}")
     private String gatewayEndpoint;
+    /**
+     * 模型网关调用超时：向量化、重排序这类接口在文档量大或模型排队时会慢，
+     * 超时太短（原来固定 25s）会让知识检索频繁失败，因此放宽并允许配置；单位毫秒
+     */
+    @Value("${fs.agent.gateway.connectTimeout:5000}")
+    private int gatewayConnectTimeout;
+    @Value("${fs.agent.gateway.socketTimeout:300000}")
+    private int gatewaySocketTimeout;
+    @Value("${fs.agent.gateway.requestTimeout:10000}")
+    private int gatewayRequestTimeout;
 
     public AIService() {
         PoolingHttpClientConnectionManager pooling = new PoolingHttpClientConnectionManager();
@@ -43,10 +56,14 @@ public class AIService implements DisposableBean {
         HttpClientBuilder builder = HttpClientBuilder.create();
         builder.setConnectionManager(pooling);
         client = builder.build();
+    }
+
+    @PostConstruct
+    public void initialize() {
         config = RequestConfig.custom()
-                .setSocketTimeout(25000)
-                .setConnectTimeout(1000)
-                .setConnectionRequestTimeout(3000)
+                .setSocketTimeout(gatewaySocketTimeout)
+                .setConnectTimeout(gatewayConnectTimeout)
+                .setConnectionRequestTimeout(gatewayRequestTimeout)
                 .build();
     }
 

@@ -4,11 +4,12 @@
  *
  * @v-model  {Record<string, string>}  元数据对象（双向绑定主值）
  * @prop     {Boolean}                 editable - 是否可编辑，默认 false，通过 v-model:editable 传入
+ * @prop     {Boolean}                 compact  - 紧凑模式：按钮与输入框用小号、工具条可换行，用于属性面板等窄容器
  *
  * @example
  * <metadata-table v-model="{&quot;作者&quot;: &quot;张三&quot;, &quot;版本&quot;: &quot;1.0&quot;}" :editable="true" />
  */
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import * as ElementPlusIcons from '@element-plus/icons-vue';
 import type { TableInstance } from 'element-plus';
 import DataUtil from '@/utils/DataUtil';
@@ -17,10 +18,13 @@ const model = defineModel<Record<string, string>>({ default: () => ({}) })
 const tableRef = ref<TableInstance>()
 const editable = defineModel('editable', { type: Boolean, default: false })
 const sensitives = defineModel<string[]>('sensitives', { default: () => ['authorization', 'x-api-key', 'x-auth-token'] })
+// 窄容器（如设计器属性面板）下的紧凑排版
+const { compact = false } = defineProps<{ compact?: boolean }>()
+const size = computed(() => compact ? 'small' : 'default')
 const selection: any = ref([])
 
 const isSensitive = (key: string) => {
-  const k = key.toLowerCase()
+  const k = String(key ?? '').toLowerCase()
   return (sensitives.value ?? []).some(f => f.toLowerCase() === k)
 }
 
@@ -107,35 +111,38 @@ const handleBottom = () => {
 </script>
 <template>
   <template v-if="editable">
-    <el-space class="toolbar">
-      <el-space>
-        <button-add @click="handleAdd" />
-        <button-delete :disabled="selection.length === 0" @click="handleDelete" />
+    <el-space class="toolbar" :class="{ 'is-compact': compact }" :size="compact ? 4 : 8" :wrap="compact">
+      <el-space :size="compact ? 4 : 8">
+        <button-add :size="size" @click="handleAdd" />
+        <button-delete :size="size" :disabled="selection.length === 0" @click="handleDelete" />
       </el-space>
       <el-button-group>
-        <el-button :disabled="selection.length === 0" :icon="ElementPlusIcons.Upload" @click="handleTop" />
-        <el-button :disabled="selection.length === 0" :icon="ElementPlusIcons.Top" @click="handleUp" />
-        <el-button :disabled="selection.length === 0" :icon="ElementPlusIcons.Bottom" @click="handleDown" />
-        <el-button :disabled="selection.length === 0" :icon="ElementPlusIcons.Download" @click="handleBottom" />
+        <el-button :size="size" :disabled="selection.length === 0" :icon="ElementPlusIcons.Upload" @click="handleTop" />
+        <el-button :size="size" :disabled="selection.length === 0" :icon="ElementPlusIcons.Top" @click="handleUp" />
+        <el-button :size="size" :disabled="selection.length === 0" :icon="ElementPlusIcons.Bottom" @click="handleDown" />
+        <el-button :size="size" :disabled="selection.length === 0" :icon="ElementPlusIcons.Download" @click="handleBottom" />
       </el-button-group>
     </el-space>
     <el-table
       ref="tableRef"
       :data="rows"
       :border="true"
+      :size="size"
+      :class="{ 'is-compact': compact }"
       table-layout="auto"
       @selection-change="(s: any) => selection = s"
     >
       <el-table-column type="selection" />
       <el-table-column label="字段名称">
         <template #default="scope">
-          <el-input v-model="scope.row.key" placeholder="必填，字段名称" />
+          <el-input v-model="scope.row.key" :size="size" placeholder="必填，字段名称" />
         </template>
       </el-table-column>
       <el-table-column label="字段值">
         <template #default="scope">
           <el-input
             v-model="scope.row.value"
+            :size="size"
             placeholder="必填，字段值"
             :type="isSensitive(scope.row.key) ? 'password' : 'text'"
             :show-password="isSensitive(scope.row.key)"
@@ -148,6 +155,8 @@ const handleBottom = () => {
     <el-table
       :data="rows"
       :border="true"
+      :size="size"
+      :class="{ 'is-compact': compact }"
       table-layout="auto"
     >
       <el-table-column prop="key" label="字段名称" />
@@ -167,5 +176,27 @@ const handleBottom = () => {
   justify-content: space-between;
   margin-bottom: 15px;
   width: 100%;
+  /* 紧凑模式：按钮更小、间距更紧，窄容器里也不会挤成两行 */
+  &.is-compact {
+    margin-bottom: 8px;
+    :deep(.el-button) {
+      padding: 0 7px;
+    }
+  }
+}
+
+/* 紧凑模式：表头与单元格一并收小（字号、行高、内边距） */
+.el-table.is-compact {
+  :deep(th.el-table__cell) {
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  :deep(td.el-table__cell) {
+    padding: 4px 0;
+  }
+  :deep(.el-table__cell .cell) {
+    padding: 0 6px;
+    line-height: 1.5;
+  }
 }
 </style>

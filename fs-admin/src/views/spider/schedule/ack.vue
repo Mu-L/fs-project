@@ -46,7 +46,7 @@ const handleDiscard = (scope: any) => {
       </el-space>
       <el-space>
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
       </el-space>
     </div>
     <el-table

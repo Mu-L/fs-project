@@ -6,6 +6,16 @@ import org.hibernate.annotations.DynamicUpdate;
 
 import jakarta.persistence.*;
 
+/**
+ * 会话消息：一次运行落两条 —— 用户提问（role=user）与助手回复（role=assistant）。
+ *
+ * - 只存「展示与多轮记忆」需要的字段：content 正文、reasoningContent 思考过程、
+ *   reference 参考数据（图表等）、feedback_* 点赞点踩；历史会话打开即按这些字段还原；
+ * - 运行明细（入参、节点与工具调用过程）单独存在 agentic_log，按 agentic_log.answer_id
+ *   关联到本轮的助手回复，前端展开「执行过程」时才按 logId 懒加载，避免列表接口读大字段；
+ * - parentId 用于「重新生成」时指向被替换的消息；
+ * - 删除为标记删除：deletedTime=0 表示未删除，删除会话时随会话一并打标记。
+ */
 @Entity
 @Getter
 @Setter

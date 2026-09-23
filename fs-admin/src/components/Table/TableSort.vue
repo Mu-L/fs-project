@@ -5,6 +5,7 @@
  * @v-model  {String}          排序字符串（双向绑定主值），格式如 "field1.asc,field2.desc"
  * @prop     {ColumnConfig[]}  columns  - 表格列配置数组（必填），需包含 prop 和 label
  * @prop     {String}          sortable - 可排序字段列表，格式同 v-model，用于初始化可选字段
+ * @prop     {Boolean}         loading  - 表格加载中状态，加载中时禁用排序设置
  *
  * @emits {Function} change - 确认排序变更时触发
 
@@ -26,6 +27,7 @@ import TreeUtil from '@/utils/TreeUtil'
 import DataUtil from '@/utils/DataUtil'
 
 const model = defineModel<string>({ default: '' })
+const loading = defineModel('loading', { type: Boolean, default: false })
 
 const props = defineProps({
   columns: { type: Array<any>, required: true },
@@ -165,13 +167,14 @@ const isActive = computed(() => !!model.value)
       circle
       :type="isActive ? 'primary' : undefined"
       title="排序"
+      :loading="loading"
     />
     <template #dropdown>
       <el-space class="header flex-end" spacer="/">
         <el-button link @click="tree?.setCheckedKeys(treeCheckedKeys = TreeUtil.ids(treeData))">全选</el-button>
         <el-button link @click="tree?.setCheckedKeys(treeCheckedKeys = DataUtil.removeArrayItem(TreeUtil.ids(treeData), treeCheckedKeys))">反选</el-button>
       </el-space>
-      <div class="tree-body">
+      <el-scrollbar class="tree-body" max-height="320px">
         <el-tree
           ref="tree"
           :data="treeData"
@@ -194,7 +197,7 @@ const isActive = computed(() => !!model.value)
             </div>
           </template>
         </el-tree>
-      </div>
+      </el-scrollbar>
       <el-space class="footer flex-center" size="large">
         <el-button type="primary" size="small" @click="handleSubmit">确认</el-button>
         <el-button type="warning" size="small" @click="handleReset">重置</el-button>
@@ -219,8 +222,14 @@ const isActive = computed(() => !!model.value)
 }
 .tree-body {
   max-height: 320px;
-  overflow-y: auto;
   padding: 4px 0;
+  box-sizing: border-box;
+}
+.tree-body :deep(.el-scrollbar__view) {
+  padding: 0 2px;
+}
+.tree-body :deep(.el-tree) {
+  background: transparent;
 }
 .tree-item {
   flex: 1;

@@ -143,6 +143,24 @@ const decorate = () => {
 /**
  * 只读预览：渲染前把图片标识替换为实时地址，预览结果不回流正文，可安全改写
  */
+/**
+ * 软换行转硬换行：Markdown 里单个换行默认渲染成空格，而模型输出通常按行排版，
+ * 这里给行尾补两个空格让换行生效（代码块内部与块级语法行不动，避免污染）
+ */
+const hardBreaks = (content: string) => {
+  let fence = false
+  return String(content ?? '').split('\n').map((line) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fence = !fence
+      return line
+    }
+    if (fence || '' === line.trim()) return line
+    // 表格/标题/列表/引用等块级语法行本身就有换行语义，不再补
+    if (/^\s*([-*+]|\d+\.|>|#{1,6}\s|\||:::)/.test(line)) return line
+    return line + '  '
+  }).join('\n')
+}
+
 const loadPreview = (content: string) => {
   if (!previewRef.value) return
   if (!content) {
@@ -150,7 +168,7 @@ const loadPreview = (content: string) => {
     return
   }
   // 兼容内容里残留占位地址的情况，先统一还原为标识再解析
-  const html = normalizeOut(content).replace(imagePattern(), (all: string, id: string) => {
+  const html = hardBreaks(normalizeOut(content)).replace(imagePattern(), (all: string, id: string) => {
     return `](${imageUrls[id] || fallbackImage})`
   })
   Vditor.preview(previewRef.value, html, {

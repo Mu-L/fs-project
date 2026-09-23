@@ -3,6 +3,20 @@ spring:
     name: fs-agent-service
   profiles:
     active: dev,idev
+fs:
+  agent:
+    # 模型网关调用超时（毫秒）：向量化 / 重排序等接口慢，读超时给足；
+    # 会话补全的读超时是「相邻两次读取」的间隔上限，流式长回复不会被整体耗时掐断
+    gateway:
+      connectTimeout: 5000        # 向量化 / 重排序等接口的连接超时
+      socketTimeout: 300000       # 向量化 / 重排序等接口的读超时（5 分钟）
+      requestTimeout: 10000       # 从连接池取连接的等待上限
+      chatConnectTimeout: 5000    # 会话补全的连接超时
+      chatReadTimeout: 600000     # 会话补全的读超时（10 分钟）
+    # 工具方法调用超时（毫秒）：工具是外部依赖，卡住要尽快失败交给模型重试，不能拖着整轮运行
+    tool:
+      connectTimeout: 10000
+      readTimeout: 60000
   jpa:
     show-sql: true
     hibernate:

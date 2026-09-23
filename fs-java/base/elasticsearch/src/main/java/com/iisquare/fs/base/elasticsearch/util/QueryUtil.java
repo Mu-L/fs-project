@@ -25,7 +25,7 @@ public class QueryUtil {
     }
 
     public static Query should(List<Query> list) {
-        return Query.of(q -> q.bool(b -> b.must(list)));
+        return Query.of(q -> q.bool(b -> b.should(list)));
     }
 
     public static Query must(Query... queries) {
@@ -33,7 +33,7 @@ public class QueryUtil {
     }
 
     public static Query must(List<Query> list) {
-        return Query.of(q -> q.bool(b -> b.should(list)));
+        return Query.of(q -> q.bool(b -> b.must(list)));
     }
 
     public static Query mustNot(Query... queries) {

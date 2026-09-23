@@ -147,7 +147,7 @@ const handleDelete = () => {
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
       </el-space>
     </div>
     <el-table
@@ -168,7 +168,7 @@ const handleDelete = () => {
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
   <el-drawer v-model="formVisible" :close-on-click-modal="false" :show-close="false" :destroy-on-close="true">
     <template #header="{ close, titleId, titleClass }">

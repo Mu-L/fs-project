@@ -80,13 +80,6 @@ public class RbacService extends RbacServiceBase {
      */
     public static final Duration PERMIT_CACHE_TTL = Duration.ofMinutes(30);
 
-    /**
-     * 缓存结构版本，结构变更后旧缓存自动失效
-     * 4：用户缓存存储全部角色标识与锁定时间，角色缓存存储角色状态，角色有效性与账号锁定由缓存读取时判定
-     * 5：用户缓存增加邮箱、手机号等身份信息，identity 所需数据全部由用户与角色缓存组装
-     */
-    public static final int PERMIT_CACHE_VERSION = 5;
-
     @Override
     public <T> List<T> fillUserInfo(List<T> list, String... properties) {
         throw new RuntimeException("replace Name to UserInfo");
@@ -221,7 +214,6 @@ public class RbacService extends RbacServiceBase {
      */
     private ObjectNode buildUserPermit(Integer uid) {
         ObjectNode permit = DPUtil.objectNode();
-        permit.put("version", PERMIT_CACHE_VERSION);
         ArrayNode roles = permit.putArray("roles");
         User user = userService.info(uid);
         if (null == user) return permit;
@@ -308,7 +300,6 @@ public class RbacService extends RbacServiceBase {
      */
     private ObjectNode buildRolePermit(Integer roleId) {
         ObjectNode permit = DPUtil.objectNode();
-        permit.put("version", PERMIT_CACHE_VERSION);
         ArrayNode applications = permit.putArray("applications");
         ArrayNode resources = permit.putArray("resources");
         ArrayNode menus = permit.putArray("menus");
@@ -437,10 +428,10 @@ public class RbacService extends RbacServiceBase {
     }
 
     /**
-     * 缓存是否可用，结构版本不一致时视为失效
+     * 缓存是否可用，结构版本由 key 命名空间隔离，此处仅做基础结构校验
      */
     private boolean validPermit(JsonNode cache) {
-        return null != cache && cache.isObject() && PERMIT_CACHE_VERSION == cache.at("/version").asInt();
+        return null != cache && cache.isObject();
     }
 
     public ArrayNode loadMenu(int uid) {

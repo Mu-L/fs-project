@@ -2,6 +2,14 @@ package com.iisquare.fs.web.member.core;
 
 public class RedisKey {
 
+    /**
+     * 鉴权缓存结构版本，结构变更后递增，旧版本缓存不再被读取，到期后自然失效
+     * 版本仅体现在 key 名称中，缓存值不再写入版本号，多版本服务并行时各自使用独立命名空间，互不覆盖
+     * 4：用户缓存存储全部角色标识与锁定时间，角色缓存存储角色状态，角色有效性与账号锁定由缓存读取时判定
+     * 5：用户缓存增加邮箱、手机号等身份信息，identity 所需数据全部由用户与角色缓存组装
+     */
+    public static final int PERMIT_CACHE_VERSION = 5;
+
     public static String captcha(String uuid) {
         return "fs:member:captcha:" + uuid;
     }
@@ -33,14 +41,21 @@ public class RedisKey {
      * 角色不存在或未启用时仅包含基础信息，不包含授权数据
      */
     public static String permitRole(Integer roleId) {
-        return "fs:member:permit:role:" + roleId;
+        return permitPrefix() + "role:" + roleId;
     }
 
     /**
      * 用户资源缓存，值为该用户基础信息（含邮箱、手机号等身份信息）与配置的全部角色标识，不按角色状态过滤
      */
     public static String permitUser(Integer uid) {
-        return "fs:member:permit:user:" + uid;
+        return permitPrefix() + "user:" + uid;
+    }
+
+    /**
+     * 鉴权缓存命名空间，版本号位于角色、用户标识之前，便于按版本整体清理
+     */
+    private static String permitPrefix() {
+        return "fs:member:permit:v" + PERMIT_CACHE_VERSION + ":";
     }
 
 }

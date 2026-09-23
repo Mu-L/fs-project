@@ -170,8 +170,8 @@ const {
         .el-select {
           font-size: 13px;
         }
-        /* 分组标题：不加底色（与面板同色，吸顶时不透出下方内容），仅用左侧主色浅色短条做标记
-           （9px 内边距 + 3px 边框 = 与字段标签同为 12px）；底色会与字段区域的浅灰底色混淆，体现不出区域差异 */
+        /* 分组标题：与面板同色（吸顶时不透出下方内容），只用左侧主色短条做标记；
+           区域差异由「灰底上的白色卡片」与留白表达，不加分隔线、不铺灰色块 */
         .el-form-item.title {
           position: sticky;
           top: 0;
@@ -179,7 +179,7 @@ const {
           z-index: 11;
           display: flex;
           align-items: center;
-          margin: 8px -12px;
+          margin: 10px -12px 8px;
           padding: 5px 12px 5px 9px;
           border-left: solid 1px var(--el-color-primary-light-3);
           background-color: var(--fs-layout-background-color);
@@ -210,8 +210,9 @@ const {
             margin-bottom: 2px;
             line-height: 20px;
           }
-          /* 数值输入等单行短控件：标签在左、数值框按固定宽度靠右，不再占满整行 */
-          .el-form-item:has(.el-input-number) {
+          /* 数值输入等单行短控件：标签在左、数值框按固定宽度靠右，不再占满整行。
+             ParamRow 自带同一套排版（并自定义数值框宽度），这里排除掉，避免两条规则互相覆盖 */
+          .el-form-item:has(.el-input-number):not(:has(.param-row)) {
             display: flex;
             align-items: center;
             .el-form-item__label {
@@ -281,6 +282,12 @@ const {
     &.splitter {
       :deep(.el-splitter-panel) {
         overflow: hidden;
+      }
+      /* 分隔条上的展开/收起按钮会向面板内伸出 12px（Element Plus 给它 z-index 9），
+         会被面板里的吸顶小标题（11）与页签栏（12）盖住；把分隔条整体抬到面板内容之上，
+         悬停时按钮始终可见，同时仍低于拖拽遮罩（999），不影响拖拽调整宽度 */
+      :deep(.el-splitter-bar) {
+        z-index: 30;
       }
       .left {
         width: 100%;

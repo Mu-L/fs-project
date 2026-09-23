@@ -202,7 +202,7 @@ const handleDelete = () => {
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
 
   <el-dialog v-model="infoVisible" :title="`信息查看 - ${form._id}`" :destroy-on-close="true" width="818">

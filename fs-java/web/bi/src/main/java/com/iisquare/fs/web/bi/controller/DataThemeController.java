@@ -25,8 +25,8 @@ public class DataThemeController extends PermitControllerBase {
 
     @RequestMapping("/info")
     @Permission("")
-    public String infoAction(@RequestBody Map<?, ?> param) {
-        Map<String, Object> result = dataThemeService.info(param);
+    public String infoAction(@RequestBody Map<?, ?> param, HttpServletRequest request) {
+        Map<String, Object> result = dataThemeService.info(param, request);
         return ApiUtil.echoResult(result);
     }
 

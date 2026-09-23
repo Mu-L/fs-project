@@ -7,6 +7,9 @@
   --fs-layout-header-height: 56px;
   --fs-layout-border-color: #e5e7eb;
   --fs-layout-background-color: rgb(247, 250, 252);
+  /* 分组内卡片的面（变量、分类、工具、只读清单等）：与全站一致——灰底之上用白色块，
+     区域差异由白面与主色状态表达，不再用一堆深浅接近的灰块堆叠 */
+  --fs-panel-surface: #fff;
 }
 
 body, html {

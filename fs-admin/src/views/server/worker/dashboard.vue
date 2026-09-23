@@ -252,7 +252,7 @@ const taskRemove = (row: any) => {
           </el-space>
           <el-space>
             <button-refresh @click="nodeLoad" :loading="nodeLoading" />
-            <TableColumnSetting v-model="nodeColumns" :table="nodeTableRef" />
+            <TableColumnSetting v-model="nodeColumns" :table="nodeTableRef" :loading="nodeLoading" />
           </el-space>
         </div>
 
@@ -323,7 +323,7 @@ const taskRemove = (row: any) => {
           <el-space>
             <el-tag size="small" type="info" effect="plain">共 {{ data.tasks.length }} 个任务</el-tag>
             <button-refresh @click="nodeLoad" :loading="taskLoading || nodeLoading" />
-            <TableColumnSetting v-model="taskColumns" :table="taskTableRef" />
+            <TableColumnSetting v-model="taskColumns" :table="taskTableRef" :loading="taskLoading || nodeLoading" />
           </el-space>
         </div>
 

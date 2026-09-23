@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import type { FormInstance, TableInstance } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import RouteUtil from '@/utils/RouteUtil'
 import { useRoute, useRouter } from 'vue-router';
 import ToolApi from '@/api/agent/ToolApi';
@@ -9,6 +10,7 @@ import DateUtil from '@/utils/DateUtil';
 import TableUtil from '@/utils/TableUtil';
 import RoleApi from '@/api/member/RoleApi';
 import MetadataTable from '@/components/Data/MetadataTable.vue'
+import { paramDetailText, paramHint, schemaSample } from '@/designer/Agentic/tool'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,6 +21,7 @@ const columns = ref([
   { prop: 'id', label: 'ID' },
   { prop: 'name', label: '工具名称' },
   { prop: 'typeText', label: '工具类型' },
+  { prop: 'methodCount', label: '方法数' },
   { prop: 'url', label: '调用地址', hide: true },
   { prop: 'labels', label: '标签', slot: 'labels' },
   { prop: 'roles', label: '授权角色', slot: 'role' },
@@ -66,6 +69,12 @@ const rules = ref({
   url: [{ required: true, message: '请输入调用地址', trigger: 'blur' }],
   status: [{ required: true, message: '请选择状态', trigger: 'change' }]
 })
+// 打开编辑抽屉时的配置快照：用于判断编辑中的内容与已保存的是否一致
+const formSource = ref('')
+const formSnapshot = () => JSON.stringify({ type: form.value.type, content: form.value.content })
+const snapshotForm = () => { formSource.value = formSnapshot() }
+const formDirty = computed(() => formSnapshot() !== formSource.value)
+
 const handleAdd = () => {
   form.value = {
     status: '1',
@@ -75,10 +84,12 @@ const handleAdd = () => {
     roleIds: [],
   }
   formVisible.value = true
+  snapshotForm()
 }
 const handleShow = (scope: any) => {
   form.value = Object.assign({}, scope.row)
   infoVisible.value = true
+  loadMethods(scope.row.id)
 }
 const handleEdit = (scope: any) => {
   form.value = Object.assign({}, scope.row, {
@@ -89,6 +100,8 @@ const handleEdit = (scope: any) => {
     query: scope.row.query || {},
   })
   formVisible.value = true
+  snapshotForm()
+  loadFormMethods(true)
 }
 const handleSubmit = () => {
   formRef.value?.validate((valid: boolean) => {
@@ -281,6 +294,184 @@ const handleMcpSync = () => {
   })
 }
 
+/* ------------------------------- 方法清单 ------------------------------- */
+
+// 已保存工具的方法：后端解析落库后读库返回（不对配置重复解析）
+const methods = ref<any[]>([])
+const methodsLoading = ref(false)
+const loadMethods = (id: any) => {
+  methods.value = []
+  if (!id) return
+  methodsLoading.value = true
+  ToolApi.methods({ id }).then((result: any) => {
+    methods.value = ApiUtil.data(result) ?? []
+  }).catch(() => {}).finally(() => {
+    methodsLoading.value = false
+  })
+}
+
+// 编辑中的方法预览：解析当前内容但不落库（粘贴 OpenAPI 或同步 MCP 后立即可见）
+const formMethods = ref<any[]>([])
+const formParseError = ref('')
+let parseTimer: any = null
+const loadFormMethods = (immediate = false) => {
+  clearTimeout(parseTimer)
+  // 编辑器里的输入逐字触发，延迟一点再请求，避免每敲一个字符解析一次
+  if (!immediate) {
+    parseTimer = setTimeout(() => loadFormMethods(true), 600)
+    return
+  }
+  formMethods.value = []
+  formParseError.value = ''
+  if (!form.value.type || !form.value.content) return
+  const param = { type: form.value.type, content: form.value.content }
+  ToolApi.parse(param).then((result: any) => {
+    formMethods.value = ApiUtil.data(result) ?? []
+  }).catch((error: any) => {
+    formParseError.value = error?.message ?? '解析失败'
+  })
+}
+watch(() => [form.value.type, form.value.content], () => {
+  if (formVisible.value) loadFormMethods()
+})
+
+// 重新解析：按已保存工具的配置重解析并落库（存量工具或内容变更后重新解析）
+const handleParseSource = () => {
+  if (!form.value.id) {
+    ElMessage.warning('请先保存工具后再重新解析')
+    return
+  }
+  formLoading.value = true
+  ToolApi.parseSource({ id: form.value.id }, { success: true }).then(() => {
+    loadMethods(form.value.id) // 详情抽屉的方法清单
+    loadFormMethods(true) // 编辑中的预览同步刷新
+    handleRefresh(false, true) // 列表里的方法数
+  }).catch(() => {}).finally(() => {
+    formLoading.value = false
+  })
+}
+
+// 方法启用 / 停用：描述与参数由解析结果决定，这里只维护可用状态
+const handleMethodStatus = (method: any) => {
+  const status = 1 === method.status ? 2 : 1
+  ToolApi.methodSave({ id: method.id, status }, { success: true }).then(() => {
+    method.status = status
+  }).catch(() => {})
+}
+
+/* ------------------------------- 方法测试 ------------------------------- */
+
+const testVisible = ref(false)
+const testLoading = ref(false)
+const testMethod = ref<any>(null)
+const testValues = ref<Record<string, string>>({})
+const testTab = ref('params')
+const testResponse = ref('')
+const testSuccess = ref(true)
+const testStatus = ref<number | null>(null)
+// 测试时可临时调整请求头（只作用于本次测试，不改动工具配置）
+const testHeaders = ref<Record<string, string>>({})
+// 响应头与响应体：与数据接口配置一致，响应头默认折叠
+const testResponseHeaders = ref<Record<string, string>>({})
+const testHeaderVisible = ref(false)
+
+const testParams = computed<any[]>(() => testMethod.value?.params ?? [])
+// 对象与数组参数按 JSON 录入，其余按文本
+const complexParam = (item: any) => ['object', 'array'].indexOf(String(item?.type ?? '').toLowerCase()) >= 0
+
+const handleTestOpen = (method: any) => {
+  testMethod.value = method
+  testValues.value = {}
+  ;(method?.params ?? []).forEach((item: any) => {
+    // 对象/数组参数按结构生成模板，直接改字段值即可，避免面对空白的 JSON 输入框
+    testValues.value[item.name] = complexParam(item) && item.schema
+      ? JSON.stringify(schemaSample(item.schema), null, 2)
+      : ''
+  })
+  testHeaders.value = Object.assign({}, form.value.header ?? {})
+  testTab.value = 'params'
+  testResponse.value = ''
+  testSuccess.value = true
+  testStatus.value = null
+  testResponseHeaders.value = {}
+  testHeaderVisible.value = false
+  testVisible.value = true
+}
+
+/** 请求方法与地址：OpenAPI 取 invoke 的 server + path，MCP 取服务地址 */
+const testVerb = computed(() => {
+  const invoke: any = testMethod.value?.invoke ?? {}
+  return invoke.method ? String(invoke.method) : 'tools/call'
+})
+const testAddress = computed(() => {
+  const invoke: any = testMethod.value?.invoke ?? {}
+  const server = invoke.server || form.value.url || ''
+  return invoke.path ? `${server}${invoke.path}` : server
+})
+const testContentType = computed(() => {
+  const headers: any = testResponseHeaders.value ?? {}
+  const key = Object.keys(headers).find((key: string) => 'content-type' === key.toLowerCase())
+  return key ? headers[key] : ''
+})
+const testResponseHeaderText = computed(() => JSON.stringify(testResponseHeaders.value ?? {}, null, 2))
+
+// 执行变量取值：对象/数组按 JSON 解析，布尔按真假，其余保持字符串
+const testArgs = () => {
+  const args: any = {}
+  testParams.value.forEach((item: any) => {
+    const value = String(testValues.value[item.name] ?? '').trim()
+    if ('' === value) return
+    const type = String(item.type ?? '').toLowerCase()
+    if ('object' === type || 'array' === type) {
+      try {
+        args[item.name] = JSON.parse(value)
+      } catch (error) {
+        args[item.name] = value
+      }
+    } else if ('boolean' === type) {
+      args[item.name] = 'false' !== value && '0' !== value
+    } else {
+      args[item.name] = value
+    }
+  })
+  return args
+}
+
+const handleTestSubmit = () => {
+  const missing = testParams.value.filter((item: any) => item.required && !String(testValues.value[item.name] ?? '').trim())
+  if (missing.length) {
+    ElMessage.warning(`请填写必填参数：${missing.map((item: any) => item.name).join('、')}`)
+    return
+  }
+  // 带上当前配置（含编辑中未保存的内容），后端据此解析方法并真正发起一次调用
+  const param = Object.assign({}, form.value, {
+    header: testHeaders.value, // 测试可临时调整请求头
+    methodName: testMethod.value?.name,
+    args: testArgs(),
+  })
+  delete param.id
+  testLoading.value = true
+  ToolApi.test(param).then((result: any) => {
+    const data: any = ApiUtil.data(result)
+    testSuccess.value = false !== data?.success
+    testStatus.value = undefined === data?.status ? null : Number(data.status)
+    testResponseHeaders.value = data?.header ?? {}
+    const response = data?.response ?? data?.message ?? ''
+    const text = 'string' === typeof response ? response : JSON.stringify(response, null, 2)
+    // 响应是 JSON 时自动格式化，便于直接查看
+    let pretty = text
+    try {
+      pretty = JSON.stringify(JSON.parse(text), null, 2)
+    } catch (error) {
+      pretty = text
+    }
+    testResponse.value = pretty
+    testTab.value = 'response'
+  }).catch(() => {}).finally(() => {
+    testLoading.value = false
+  })
+}
+
 </script>
 
 <template>
@@ -314,8 +505,8 @@ const handleMcpSync = () => {
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
-        <TableSort v-model="filters.sort" :columns="columns" :sortable="config.sorts" @change="handleRefresh(true, true)" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
+        <TableSort v-model="filters.sort" :columns="columns" :sortable="config.sorts" :loading="loading" @change="handleRefresh(true, true)" />
       </el-space>
     </div>
     <el-table
@@ -343,7 +534,7 @@ const handleMcpSync = () => {
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
   <el-drawer v-model="infoVisible" :title="'信息查看 - ' + form.id" size="60%">
     <el-descriptions :column="2" label-width="100px" border>
@@ -361,6 +552,34 @@ const handleMcpSync = () => {
       <el-descriptions-item label="调用地址" :span="2">{{ form.url }}</el-descriptions-item>
       <el-descriptions-item label="配置信息" :span="2">
         <CodeEditor v-model="form.content" :height="300" mode="javascript" resizable />
+      </el-descriptions-item>
+      <el-descriptions-item label="方法清单" :span="2">
+        <el-table :data="methods" size="small" border v-loading="methodsLoading" v-if="methods.length">
+          <el-table-column prop="name" label="方法" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="description" label="描述" show-overflow-tooltip />
+          <el-table-column label="参数" min-width="180" show-overflow-tooltip>
+            <template #default="scope">{{ paramDetailText(scope.row) || '无' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="scope">
+              <el-tag :type="1 === scope.row.present ? (1 === scope.row.status ? 'success' : 'info') : 'danger'" size="small" effect="plain">
+                {{ 1 === scope.row.present ? (1 === scope.row.status ? '启用' : '停用') : '已失效' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="130" fixed="right">
+            <template #default="scope">
+              <el-button link @click="handleTestOpen(scope.row)">测试</el-button>
+              <!-- 失效的方法不需要启停：重新解析后才可恢复 -->
+              <el-button link @click="handleMethodStatus(scope.row)" v-if="1 === scope.row.present">
+                {{ 1 === scope.row.status ? '停用' : '启用' }}
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-text type="info" size="small" v-else>
+          未解析到方法：可直接点「编辑」里的「重新解析」按已保存配置重解析；schema 工具需为 OpenAPI 文档（JSON / YAML），MCP 工具请先同步 MCP 配置
+        </el-text>
       </el-descriptions-item>
       <el-descriptions-item label="请求头" :span="2"><metadata-table v-model="form.header" /></el-descriptions-item>
       <el-descriptions-item label="查询参数" :span="2"><metadata-table v-model="form.query" /></el-descriptions-item>
@@ -405,10 +624,34 @@ const handleMcpSync = () => {
             <el-button @click="handleJsonDemo" :loading="formLoading">JSON样例</el-button>
             <el-button @click="handleYamlDemo" :loading="formLoading">YAML样例</el-button>
             <el-button @click="handleMcpSync" :loading="formLoading" :disabled="!form.url">同步MCP配置</el-button>
+            <!-- 编辑中的内容与已保存的不一致时，重新解析没有意义：保存时会自动解析 -->
+            <el-button
+              @click="handleParseSource"
+              :loading="formLoading"
+              :disabled="!form.id || formDirty"
+              :title="formDirty ? '内容已修改，保存时会自动解析' : '按已保存的配置重新解析方法'">重新解析</el-button>
           </el-space>
         </el-descriptions-item>
         <el-descriptions-item label="配置信息" :span="2">
           <CodeEditor v-model="form.content" :height="300" mode="javascript" resizable />
+        </el-descriptions-item>
+        <el-descriptions-item label="方法清单" :span="2">
+          <el-table :data="formMethods" size="small" border v-if="formMethods.length">
+            <el-table-column prop="name" label="方法" min-width="140" show-overflow-tooltip />
+            <el-table-column prop="description" label="描述" show-overflow-tooltip />
+            <el-table-column label="参数" min-width="180" show-overflow-tooltip>
+              <template #default="scope">{{ paramDetailText(scope.row) || '无' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="80" fixed="right">
+              <template #default="scope">
+                <el-button link @click="handleTestOpen(scope.row)">测试</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-text type="danger" size="small" v-else-if="formParseError">{{ formParseError }}</el-text>
+          <el-text type="info" size="small" v-else>
+            未解析到方法：schema 工具需为 OpenAPI 文档（JSON / YAML），MCP 工具请先同步 MCP 配置
+          </el-text>
         </el-descriptions-item>
         <el-descriptions-item label="请求头" :span="2">
           <metadata-table v-model="form.header" :editable="true" />
@@ -419,7 +662,104 @@ const handleMcpSync = () => {
       </el-descriptions>
     </el-form>
   </el-drawer>
+  <!-- 方法测试：布局与交互参考数据接口配置（请求地址一行 + 发送，请求参数 / 请求头 / 响应结果分页签） -->
+  <!-- 关闭方式与其它抽屉统一：只读/测试类抽屉用默认关闭按钮，编辑抽屉用确定+取消 -->
+  <el-drawer v-model="testVisible" :title="'测试方法 - ' + (testMethod?.name ?? '')" :destroy-on-close="true" size="60%">
+    <el-alert
+      class="test-alert"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="testMethod?.description"
+      v-if="testMethod?.description" />
+    <!-- 请求地址：方法 + 地址一行，右侧「发送」，与数据接口配置一致 -->
+    <el-input v-model="testAddress" readonly placeholder="请求地址">
+      <template #prepend>
+        <span class="test-verb">{{ testVerb }}</span>
+      </template>
+      <template #append>
+        <el-button type="primary" @click="handleTestSubmit" :loading="testLoading">发送</el-button>
+      </template>
+    </el-input>
+    <el-tabs v-model="testTab" class="test-tabs">
+      <el-tab-pane label="请求参数" name="params">
+        <!-- 标签在输入框上方：参数名（+ 类型与是否必填）与取值各占一行，窄抽屉里也读得清 -->
+        <el-form label-position="top" v-if="testParams.length">
+          <el-form-item :key="item.name" v-for="item in testParams">
+            <template #label>
+              <span :title="paramHint(item)">{{ item.name }}</span>
+              <span class="param-type">{{ item.type }}{{ item.required ? ' · 必填' : '' }}</span>
+            </template>
+            <el-input
+              v-model="testValues[item.name]"
+              type="textarea"
+              :rows="4"
+              :placeholder="item.description || '请输入 JSON 内容'"
+              v-if="complexParam(item)" />
+            <el-input
+              v-model="testValues[item.name]"
+              :placeholder="item.description || '请输入参数值'"
+              v-else />
+          </el-form-item>
+        </el-form>
+        <el-empty description="该方法没有参数" :image-size="80" v-else />
+      </el-tab-pane>
+      <el-tab-pane label="请求头" name="header">
+        <metadata-table v-model="testHeaders" :editable="true" />
+        <!-- 提示放表格下方并留出间距：不挤占页签与表格之间的空间 -->
+        <div class="table-tip">
+          <tip-text text="只作用于本次测试：请求头会随测试请求一起发送，不会改动工具配置" />
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="响应结果" name="response">
+        <template v-if="testStatus || testResponse">
+          <div class="test-response-head">
+            <el-space>
+              <el-tag :type="testSuccess ? 'success' : 'danger'">{{ null === testStatus ? (testSuccess ? '成功' : '失败') : testStatus }}</el-tag>
+              <el-tag effect="plain" v-if="testContentType">{{ testContentType }}</el-tag>
+            </el-space>
+            <el-switch v-model="testHeaderVisible" active-text="显示响应头" inactive-text="隐藏响应头" inline-prompt />
+          </div>
+          <el-descriptions class="test-headers" :column="1" border v-if="testHeaderVisible && Object.keys(testResponseHeaders).length">
+            <el-descriptions-item v-for="(value, key) in testResponseHeaders" :key="key" :label="String(key)">{{ value }}</el-descriptions-item>
+          </el-descriptions>
+          <code-editor v-model="testResponse" mode="javascript" :height="320" resizable />
+        </template>
+        <el-empty description="暂无响应结果，请先发送请求" :image-size="80" v-else />
+      </el-tab-pane>
+    </el-tabs>
+  </el-drawer>
 </template>
 
 <style lang="scss" scoped>
+.test-alert {
+  margin-bottom: 12px;
+}
+.param-type {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+/* 请求方法：与数据接口配置一样放在地址输入框的前置槽里 */
+.test-verb {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+.test-tabs {
+  margin-top: 12px;
+}
+/* 表格类页签里的提示文案：放在表格下方并留出间距 */
+.table-tip {
+  margin-top: 10px;
+}
+/* 响应结果头部：状态码、内容类型与「显示响应头」开关 */
+.test-response-head {
+  margin-bottom: 12px;
+  @include flex-between();
+}
+/* 响应头明细与下方响应体之间留出间距，展开响应头时不贴在一起 */
+.test-headers {
+  margin-bottom: 12px;
+}
 </style>

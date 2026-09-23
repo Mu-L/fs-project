@@ -9,12 +9,19 @@ import FlowNode from './FlowNode.vue'
 import AgentNode from './AgentNode.vue'
 import SwitchNode from './SwitchNode.vue'
 
+/** 画布适配的冗余边距：连线的圆角、箭头与标签都要落在视口内，四周留出富余空间 */
+const FitPadding = 32
+
+/** 连线视图按帧异步渲染，适配时最多等这么多帧再按当前内容区计算 */
+const FitRetry = 10
+
 class Flow {
 
   options: any
   graph: X6.Graph
   dnd: X6.Dnd
   counter: number = 0
+  fitVersion: number = 0
 
   constructor (container: any, options: any) {
     this.options = Object.assign({}, defaults, options)
@@ -99,16 +106,71 @@ class Flow {
     return this
   }
 
-  fitting () {
-     // 将画布中元素缩小或者放大一定级别，让画布正好容纳所有元素，可以通过 maxScale 配置最大缩放级别
-    // 视口尚未拿到真实尺寸时（如分隔面板初次渲染宽度为 0）直接跳过：此时算出的缩放会被
-    // clampScale 夹到最小值写进画布，节点会缩小到不可见，且 zoomToFit 以当前缩放为基数
-    // 计算，退化缩放一旦写入就无法通过再次自适应恢复
-    const size: any = this.graph.transform.getComputedSize()
-    if (!size.width || !size.height) return this
-    this.graph.zoomToFit({ maxScale: 1 })
-    this.graph.centerContent()
+  /**
+   * 画布适配：把节点与连线整体缩放到视口内，四周留出冗余边距，各画布共用。
+   *
+   * 与直接用 X6 的 zoomToFit 有三点不同，都是适配踩过的坑：
+   * 1. 内容范围取渲染后的连线路径：manhattan 会把连线绕行到节点外侧，折点只保存在视图上，
+   *    只看模型几何会把绕行的连线（连带标签）漏在视口外；
+   * 2. 视图按帧异步渲染，连线还没渲染出来时算不出折点，按帧重试到就绪再适配；
+   * 3. 视口尺寸由 ResizeObserver 写入，分隔面板初次渲染时为 0，此时不计算：
+   *    否则退化缩放被 clampScale 夹到 0.01 写进画布，之后再适配也回不来。
+   */
+  fitting (options: any = {}) {
+    const version = ++this.fitVersion
+    const padding = undefined === options.padding ? FitPadding : options.padding
+    const maxScale = undefined === options.maxScale ? 1 : options.maxScale
+    const fit = (retry: number) => {
+      if (version !== this.fitVersion) return // 期间又发起过一次适配，以最新一次为准
+      const viewport: any = this.graph.options
+      if (!(viewport.width > 0) || !(viewport.height > 0)) {
+        // 等容器量出尺寸，resize 由 ResizeObserver 触发，等一次即可
+        this.graph.once('resize', () => fit(retry))
+        return
+      }
+      if (retry > 0 && this.unrouted()) {
+        // 还有连线没渲染出路径，此时算不到绕行折点
+        requestAnimationFrame(() => fit(retry - 1))
+        return
+      }
+      const area: any = this.contentArea(padding)
+      if (!area || !area.width || !area.height) return
+      this.graph.scale(1, 1) // zoomToRect 以当前缩放为基数计算，先复位避免与旧缩放叠加
+      this.graph.transform.zoomToRect(area, { maxScale })
+    }
+    fit(FitRetry)
     return this
+  }
+
+  /**
+   * 内容区（画布坐标）：节点 + 连线，padding 为四周的冗余边距。
+   *
+   * 连线优先取渲染后的路径：模型里的边只有两端锚点，绕行折点只存在视图上，
+   * 因此不能直接用 graph.getContentArea()（它按模型几何算，不含绕行）。
+   */
+  contentArea (padding = 0) {
+    let area: any = this.graph.getContentArea()
+    this.graph.getEdges().forEach((edge: any) => {
+      const view: any = this.graph.findViewByCell(edge)
+      const rect: any = view && view.path ? view.path.bbox() : null
+      if (!rect || (!rect.width && !rect.height)) return
+      area = area ? area.union(rect) : rect.clone()
+    })
+    return area && padding ? area.clone().inflate(padding, padding) : area
+  }
+
+  /** 同 contentArea，但换算到图坐标系：导出 toPNG/toSVG 的 viewBox 用的是图坐标 */
+  contentBBox (padding = 0) {
+    const area: any = this.contentArea(padding)
+    return area ? this.graph.localToGraph(area) : area
+  }
+
+  /** 是否还有连线没渲染出路由路径：没有路径就取不到绕行折点 */
+  unrouted () {
+    return this.graph.getEdges().some((edge: any) => {
+      const view: any = this.graph.findViewByCell(edge)
+      return !view || !view.path
+    })
   }
 
   /**
@@ -179,8 +241,11 @@ class Flow {
     if (!item || !item.shape) return false
     const cell: any = this.graph.getCellById(item.id)
     if (!cell) return false
+    // 先取出数据：传入的就是该单元格自身时（如程序化选中），
+    // removeData 之后 item.data 已被清空，直接 setData 会把节点数据抹掉
+    const data = item.data
     cell.removeData() // fixed: 事件change:data无法深度监听的问题
-    cell.setData(item.data)
+    cell.setData(data)
     this.syncCell(cell)
     return true
   }

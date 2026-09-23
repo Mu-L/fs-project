@@ -13,6 +13,8 @@ import subprocess from './subprocess.svg?raw'
 import gateway from './gateway.svg?raw'
 import transform from './transform.svg?raw'
 import userTask from './user-task.svg?raw'
+import iteration from './iteration.svg?raw'
+import loop from './loop.svg?raw'
 
 export default {
   anchor,
@@ -30,4 +32,6 @@ export default {
   gateway,
   transform,
   userTask,
+  iteration,
+  loop,
 }

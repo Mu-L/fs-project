@@ -6,12 +6,13 @@
  * @prop     {*}        instance   - 画布实例（X6Container 暴露的 flow）
  * @prop     {*}        activeItem - 当前激活的节点，用于排除自身
  * @prop     {String}   types      - 允许的变量类型，多个以英文逗号分隔
+ * @prop     {Boolean}  inner      - 只列出当前节点内部的节点变量（容器收集输出时用），默认 false
  * @prop     {Boolean}  allowCreate - 是否允许输入自定义内容，默认 false
  * @prop     {String}   icon       - Element Plus 图标名称，作为下拉框的前缀图标
  */
 import { computed, ref } from 'vue'
 import LayoutIcon from '@/components/Layout/LayoutIcon.vue'
-import { variableGroups } from './variable'
+import { variableGroups, variableLabel } from './variable'
 
 const model: any = defineModel<string>()
 const {
@@ -20,6 +21,7 @@ const {
   placeholder = '请选择变量',
   clearable = true,
   allowCreate = false,
+  inner = false,
   types = '',
   icon = '',
 } = defineProps<{
@@ -28,6 +30,7 @@ const {
   placeholder?: string,
   clearable?: boolean,
   allowCreate?: boolean,
+  inner?: boolean,
   types?: string,
   icon?: string,
 }>()
@@ -36,7 +39,7 @@ const version = ref(0)
 // 展开下拉时重新收集变量，兼容画布中节点的增删
 const groups = computed(() => {
   version.value
-  const list = variableGroups(instance, activeItem)
+  const list = variableGroups(instance, activeItem, inner)
   if (!types) return list
   const allowed = types.split(',')
   return list.map(group => Object.assign({}, group, {
@@ -62,7 +65,8 @@ const handleVisible = (visible: boolean) => {
       <LayoutIcon v-if="icon" :name="icon" />
     </template>
     <el-option-group :key="group.label" :label="group.label" v-for="group in groups">
-      <el-option :key="item.value" :value="item.value" :label="item.label || item.name" v-for="item in group.variables">
+      <!-- 选中后展示「节点名称.变量名称」：同名的变量来自不同节点时也能分辨来源 -->
+      <el-option :key="item.value" :value="item.value" :label="variableLabel(group.label, item)" v-for="item in group.variables">
         <span class="variable-name">{{ item.label || item.name }}</span>
         <span class="variable-alias" v-if="item.label && item.label !== item.name">{{ item.name }}</span>
         <span class="variable-type">{{ item.type }}</span>

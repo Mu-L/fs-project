@@ -84,6 +84,41 @@ CREATE TABLE `fs_bi_data_excel` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `fs_bi_data_query_log`
+--
+
+DROP TABLE IF EXISTS `fs_bi_data_query_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `fs_bi_data_query_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '查询类型：olap-即席查询，dataset-数据集查询，theme-数据主题查询',
+  `target_id` int NOT NULL DEFAULT '0' COMMENT '查询对象标识：数据主题查询为主题主键，即席查询为0',
+  `target_name` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '查询对象名称：数据集名称或数据主题名称',
+  `sql_text` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '实际执行的查询语句，已替换内置变量（sql为数据库保留字，故列名加_text后缀）',
+  `max_rows` int NOT NULL DEFAULT '0' COMMENT '行数限制，0表示不限制',
+  `timeout` int NOT NULL DEFAULT '0' COMMENT '超时时间（秒）',
+  `status` tinyint NOT NULL DEFAULT '0' COMMENT '状态：1-成功，2-失败',
+  `result_code` int NOT NULL DEFAULT '0' COMMENT '业务返回码',
+  `message` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '结果描述或异常信息',
+  `detail` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '详细内容：失败时的异常原因（含根因）、SQL解析或数据集校验的明细',
+  `row_count` bigint NOT NULL DEFAULT '0' COMMENT '返回或影响行数',
+  `column_count` int NOT NULL DEFAULT '0' COMMENT '返回列数',
+  `duration` bigint NOT NULL DEFAULT '0' COMMENT '耗时（毫秒）',
+  `request_ip` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '来源IP',
+  `user_agent` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '客户端标识',
+  `request_url` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '请求地址',
+  `created_uid` int NOT NULL DEFAULT '0' COMMENT '查询用户标识，用户名称查询时按标识填充',
+  `created_time` bigint NOT NULL DEFAULT '0' COMMENT '查询时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `idx_type` (`type`) USING BTREE,
+  KEY `idx_target_id` (`target_id`) USING BTREE,
+  KEY `idx_created_uid` (`created_uid`) USING BTREE,
+  KEY `idx_created_time` (`created_time`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `fs_bi_data_theme`
 --
 

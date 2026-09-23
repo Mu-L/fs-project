@@ -21,7 +21,7 @@ SET @@SESSION.SQL_LOG_BIN= 0;
 -- GTID state at the beginning of the backup 
 --
 
-SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '62aa6980-af0e-11f0-bf53-c2f7353079da:1-94877';
+SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '62aa6980-af0e-11f0-bf53-c2f7353079da:1-95039';
 
 --
 -- Table structure for table `fs_agent_agent`
@@ -66,6 +66,7 @@ CREATE TABLE `fs_agent_agentic` (
   `mode` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'workflow',
   `icon` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
   `tags` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `role_ids` varchar(2048) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '授权角色，为空表示所有登录用户可用',
   `content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `published_content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `published_version` int NOT NULL DEFAULT '0',
@@ -82,7 +83,104 @@ CREATE TABLE `fs_agent_agentic` (
   KEY `idx_name` (`name`) USING BTREE,
   KEY `idx_mode` (`mode`) USING BTREE,
   KEY `idx_status` (`status`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `fs_agent_agentic_log`
+--
+
+DROP TABLE IF EXISTS `fs_agent_agentic_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `fs_agent_agentic_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `agentic_id` int NOT NULL DEFAULT '0' COMMENT '编排标识',
+  `chat_id` int NOT NULL DEFAULT '0' COMMENT '所属会话：多轮对话时按会话回看每次运行的明细',
+  `answer_id` int NOT NULL DEFAULT '0' COMMENT '本轮助手回复的消息标识（fs_agent_chat_dialog.id）',
+  `source` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'draft' COMMENT '来源：draft-调试运行，published-外部调用',
+  `version` int NOT NULL DEFAULT '0' COMMENT '发布版本，调试运行固定为 0',
+  `status` tinyint NOT NULL DEFAULT '1' COMMENT '1-成功，2-失败',
+  `duration` bigint NOT NULL DEFAULT '0' COMMENT '执行耗时（毫秒）',
+  `inputs` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '运行入参',
+  `outputs` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '运行输出（含回复内容 answer）',
+  `steps` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '逐节点执行明细',
+  `error` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '失败原因（保留完整堆栈，不做截断）',
+  `failures` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '[]' COMMENT '异常摘要（JSON 数组，写入时预计算，会话回看直接展示）',
+  `ip` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '调用来源 IP',
+  `created_time` bigint NOT NULL DEFAULT '0',
+  `created_uid` int NOT NULL DEFAULT '0',
+  `deleted_time` bigint NOT NULL DEFAULT '0' COMMENT '删除时间，0 表示未删除（标记删除）',
+  `deleted_uid` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_agentic` (`agentic_id`) USING BTREE,
+  KEY `idx_chat` (`chat_id`,`id`) USING BTREE,
+  KEY `idx_answer` (`answer_id`) USING BTREE,
+  KEY `idx_source_status` (`source`,`status`) USING BTREE,
+  KEY `idx_created_time` (`created_time`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `fs_agent_chat`
+--
+
+DROP TABLE IF EXISTS `fs_agent_chat`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `fs_agent_chat` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `title` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '会话标题',
+  `type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '会话类型：agentic-发布应用，agentic_draft-调试运行',
+  `created_time` bigint NOT NULL DEFAULT '0',
+  `created_uid` int NOT NULL DEFAULT '0',
+  `updated_time` bigint NOT NULL DEFAULT '0',
+  `updated_uid` int NOT NULL DEFAULT '0',
+  `deleted_reason` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '删除原因',
+  `deleted_detail` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '删除描述',
+  `deleted_time` bigint NOT NULL DEFAULT '0',
+  `deleted_uid` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_type_user` (`type`,`created_uid`) USING BTREE,
+  KEY `idx_updated_time` (`updated_time`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `fs_agent_chat_dialog`
+--
+
+DROP TABLE IF EXISTS `fs_agent_chat_dialog`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `fs_agent_chat_dialog` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `chat_id` int NOT NULL DEFAULT '0' COMMENT '所属会话',
+  `parent_id` int NOT NULL DEFAULT '0' COMMENT '父消息：重新生成时指向被替换的消息',
+  `role` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '角色：user-用户，assistant-助手',
+  `reasoning_content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '思考过程',
+  `content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '消息内容',
+  `intent` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '意图识别结果',
+  `reference` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '参考数据',
+  `finish_reason` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `feedback_emotion` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '反馈情绪：positive-赞，negative-踩，cancel-取消',
+  `feedback_tag` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '反馈标签',
+  `feedback_content` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '反馈内容',
+  `feedback_time` bigint NOT NULL DEFAULT '0',
+  `created_time` bigint NOT NULL DEFAULT '0',
+  `created_uid` int NOT NULL DEFAULT '0',
+  `audit_reason` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '审核原因',
+  `audit_detail` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '审核描述',
+  `audit_time` bigint NOT NULL DEFAULT '0',
+  `audit_uid` int NOT NULL DEFAULT '0',
+  `deleted_reason` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '删除原因',
+  `deleted_detail` varchar(2000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '删除描述',
+  `deleted_time` bigint NOT NULL DEFAULT '0',
+  `deleted_uid` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_chat_id` (`chat_id`) USING BTREE,
+  KEY `idx_created_time` (`created_time`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -144,7 +242,7 @@ CREATE TABLE `fs_agent_knowledge_chunk` (
   KEY `idx_document_id` (`document_id`) USING BTREE,
   KEY `idx_knowledge_id` (`knowledge_id`) USING BTREE,
   KEY `idx_segment_id` (`segment_id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=879 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=889 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -170,7 +268,38 @@ CREATE TABLE `fs_agent_knowledge_document` (
   `updated_uid` int NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `idx_knowledge_id` (`knowledge_id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=38 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `fs_agent_knowledge_image`
+--
+
+DROP TABLE IF EXISTS `fs_agent_knowledge_image`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `fs_agent_knowledge_image` (
+  `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `knowledge_id` int NOT NULL DEFAULT '0',
+  `document_id` int NOT NULL DEFAULT '0',
+  `segment_id` int NOT NULL DEFAULT '0',
+  `bucket` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `filepath` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `suffix` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `type` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `size` bigint NOT NULL DEFAULT '0',
+  `alt` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `page` int NOT NULL DEFAULT '0',
+  `sort` tinyint NOT NULL DEFAULT '0',
+  `status` tinyint NOT NULL DEFAULT '0',
+  `created_time` bigint NOT NULL DEFAULT '0',
+  `created_uid` int NOT NULL DEFAULT '0',
+  `updated_time` bigint NOT NULL DEFAULT '0',
+  `updated_uid` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_knowledge_document` (`knowledge_id`,`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -196,7 +325,7 @@ CREATE TABLE `fs_agent_knowledge_segment` (
   PRIMARY KEY (`id`),
   KEY `idx_knowledge_id` (`knowledge_id`) USING BTREE,
   KEY `idx_document_id` (`document_id`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=39 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=43 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -266,6 +395,9 @@ CREATE TABLE `fs_agent_tool` (
   `labels` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
   `role_ids` varchar(2048) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
   `content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `content_hash` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '配置内容指纹：解析缓存用',
+  `parse_status` tinyint NOT NULL DEFAULT '1' COMMENT '解析状态：1-成功，2-失败',
+  `parse_error` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '解析失败原因',
   `sort` tinyint NOT NULL DEFAULT '0',
   `status` tinyint NOT NULL DEFAULT '0',
   `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
@@ -274,32 +406,37 @@ CREATE TABLE `fs_agent_tool` (
   `updated_time` bigint NOT NULL DEFAULT '0',
   `updated_uid` int NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `fs_agent_tool_method`
+--
+
+DROP TABLE IF EXISTS `fs_agent_tool_method`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `fs_agent_knowledge_image` (
-  `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `knowledge_id` int NOT NULL DEFAULT '0',
-  `document_id` int NOT NULL DEFAULT '0',
-  `segment_id` int NOT NULL DEFAULT '0',
-  `bucket` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `filepath` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `suffix` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `type` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `size` bigint NOT NULL DEFAULT '0',
-  `alt` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
-  `page` int NOT NULL DEFAULT '0',
+CREATE TABLE `fs_agent_tool_method` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `tool_id` int NOT NULL DEFAULT '0' COMMENT '所属工具',
+  `name` varchar(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '方法名：给模型与调用使用，已规范化为合法函数名',
+  `origin_name` varchar(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '原始方法名：OpenAPI 的 operationId、MCP 的 tool name',
+  `title` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '展示名称',
+  `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '方法描述',
+  `params` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '方法级参数：[{ name, type, required, description, in, defaultValue, enum }]',
+  `invoke` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '调用信息：schema 为 { server, method, path }，mcp 为 { name }',
   `sort` tinyint NOT NULL DEFAULT '0',
-  `status` tinyint NOT NULL DEFAULT '0',
+  `status` tinyint NOT NULL DEFAULT '1' COMMENT '1-启用，2-停用',
+  `present` tinyint NOT NULL DEFAULT '1' COMMENT '1-最近一次解析存在，0-已失效',
+  `parse_error` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '解析告警',
   `created_time` bigint NOT NULL DEFAULT '0',
   `created_uid` int NOT NULL DEFAULT '0',
   `updated_time` bigint NOT NULL DEFAULT '0',
   `updated_uid` int NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`),
-  KEY `idx_knowledge_document` (`knowledge_id`,`document_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+  UNIQUE KEY `uk_tool_method` (`tool_id`,`name`),
+  KEY `idx_tool_present` (`tool_id`,`present`)
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 SET @@SESSION.SQL_LOG_BIN = @MYSQLDUMP_TEMP_LOG_BIN;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
@@ -312,4 +449,4 @@ SET @@SESSION.SQL_LOG_BIN = @MYSQLDUMP_TEMP_LOG_BIN;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-09-14 10:33:11
+-- Dump completed on 2026-09-20  9:34:43

@@ -125,7 +125,7 @@ const handleTrigger = (record: any) => {
       <el-space>
         <button-search @click="searchable = !searchable" />
         <button-refresh @click="handleRefresh(true, true)" :loading="loading" />
-        <TableColumnSetting v-model="columns" :table="tableRef" />
+        <TableColumnSetting v-model="columns" :table="tableRef" :loading="loading" />
       </el-space>
     </div>
     <el-table
@@ -174,7 +174,7 @@ const handleTrigger = (record: any) => {
         </template>
       </el-table-column>
     </el-table>
-    <TablePagination v-model="pagination" @change="handleRefresh(true, true)" />
+    <TablePagination v-model="pagination" :loading="loading" @change="handleRefresh(true, true)" />
   </el-card>
   <el-drawer v-model="infoVisible" :title="`信息查看`">
     <el-form :model="form" label-width="auto">
