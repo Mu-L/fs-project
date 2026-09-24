@@ -19,9 +19,10 @@ defineProps<{
 }>()
 
 const columns = computed(() => [{
-  // 目标变量可写：容器（循环/迭代）内的变量直接选，会话变量按 conversation.xxx 手动输入
-  prop: 'target', type: 'variable', label: '目标变量', icon: 'Aim', default: '',
-  placeholder: '请选择容器变量，或输入会话变量 conversation.xxx',
+  // 目标变量按统一规范写引用（{{#容器标识.变量名#}} / {{#conversation.变量名#}}，运行时按引用解析）：
+  // 容器（循环/迭代）内的变量只列可写入的那部分，会话变量按 conversation.xxx 手动输入
+  prop: 'target', type: 'variable', label: '目标变量', icon: 'Aim', default: '', writable: true,
+  placeholder: '请选择容器内变量，或输入会话变量 conversation.xxx',
 }, {
   prop: 'operation', type: 'select', options: 'assignOperations', default: 'set', placeholder: '赋值方式',
 }, {

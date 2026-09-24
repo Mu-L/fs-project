@@ -31,6 +31,7 @@ public class KnowledgeImageController extends PermitControllerBase {
     /**
      * 批量签发原图访问地址
      * { "knowledgeId": 1, "ids": ["abc"], "expire": 1800000 }
+     * knowledgeId 可省略：省略时按图片自身归属的知识库逐个判权（聊天历史等无知识库上下文的场景）
      * 身份取自请求会话
      */
     @RequestMapping("/url")

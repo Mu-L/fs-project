@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iisquare.fs.base.core.util.ApiUtil;
 import com.iisquare.fs.base.core.util.DPUtil;
 import com.iisquare.fs.web.agent.service.AgenticService;
-import com.iisquare.fs.web.agent.entity.ChatDialog;
+import com.iisquare.fs.web.agent.entity.AgenticDialog;
 import com.iisquare.fs.web.core.rbac.Permission;
 import com.iisquare.fs.web.core.rbac.PermitControllerBase;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -205,7 +205,7 @@ public class AgenticController extends PermitControllerBase {
     @RequestMapping("/chatFeedback")
     @Permission("")
     public String chatFeedbackAction(@RequestBody Map<String, Object> param) {
-        ChatDialog dialog = agenticService.chatFeedback(DPUtil.parseInt(param.get("id")),
+        AgenticDialog dialog = agenticService.chatFeedback(DPUtil.parseInt(param.get("id")),
                 DPUtil.parseString(param.get("emotion")), DPUtil.parseString(param.get("tag")),
                 DPUtil.parseString(param.get("content")));
         if (null == dialog) return ApiUtil.echoResult(1404, "消息不存在", null);

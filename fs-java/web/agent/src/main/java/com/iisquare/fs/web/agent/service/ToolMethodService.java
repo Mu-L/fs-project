@@ -6,6 +6,7 @@ import com.iisquare.fs.base.core.util.ApiUtil;
 import com.iisquare.fs.base.core.util.DPUtil;
 import com.iisquare.fs.base.core.util.FileUtil;
 import com.iisquare.fs.base.core.util.HttpUtil;
+import com.iisquare.fs.base.jpa.helper.SpecificationHelper;
 import com.iisquare.fs.base.jpa.mvc.JPAServiceBase;
 import com.iisquare.fs.web.agent.dao.ToolDao;
 import com.iisquare.fs.web.agent.dao.ToolMethodDao;
@@ -26,8 +27,10 @@ import io.swagger.v3.oas.models.servers.Server;
 import io.swagger.v3.parser.OpenAPIV3Parser;
 import io.swagger.v3.parser.core.models.ParseOptions;
 import io.swagger.v3.parser.core.models.SwaggerParseResult;
+import jakarta.persistence.criteria.Predicate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import java.io.UnsupportedEncodingException;
@@ -327,7 +330,6 @@ public class ToolMethodService extends JPAServiceBase {
         try {
             parsed = parse(tool.getType(), tool.getContent());
         } catch (Exception e) {
-            tool.setParseStatus(2);
             tool.setParseError(cut(e.getMessage(), 1000));
             save(toolDao, tool, uid);
             return ApiUtil.result(1002, tool.getParseError(), null);
@@ -355,8 +357,6 @@ public class ToolMethodService extends JPAServiceBase {
             item.setPresent(0);
             save(toolMethodDao, item, uid);
         }
-        tool.setContentHash(hash(tool.getContent()));
-        tool.setParseStatus(1);
         tool.setParseError("");
         save(toolDao, tool, uid);
         return ApiUtil.result(0, null, DPUtil.buildMap("count", parsed.size(), "invalidated", exists.size()));
@@ -441,6 +441,65 @@ public class ToolMethodService extends JPAServiceBase {
         List<ToolMethod> rows = new ArrayList<>();
         for (Integer toolId : ids) rows.addAll(all(toolId));
         return ApiUtil.result(0, null, format(DPUtil.toJSON(rows)));
+    }
+
+    /**
+     * 方法检索：工具与方法都可能有大量数据，选择器按关键词分页检索，不再全量拉取。
+     *
+     * - 关键词命中方法名 / 原始名 / 展示名 / 描述，也命中工具名（按工具找方法比按方法名找更常见）；
+     * - 行内补 toolName 供选择器按工具分组展示；
+     * - withDetail 打开时附带 params / invoke 明细，选中即可用于执行变量配置，省掉二次请求。
+     */
+    public ObjectNode search(Map<String, Object> param, Map<?, ?> args) {
+        String keyword = DPUtil.trim(DPUtil.parseString(param.get("name")));
+        // 工具名命中的工具ID：与方法字段条件取并集；回显单个方法（带 id）时不做工具名匹配
+        List<Integer> matchedToolIds = new ArrayList<>();
+        if (!DPUtil.empty(keyword) && DPUtil.parseInt(param.get("id")) <= 0) {
+            List<Tool> tools = toolDao.findAll((root, query, cb) -> cb.like(root.get("name"), "%" + keyword + "%"));
+            for (Tool tool : tools) {
+                if (matchedToolIds.size() >= 500) break; // 上限保护：命中工具过多时退化为仅按方法字段匹配
+                matchedToolIds.add(tool.getId());
+            }
+        }
+        ObjectNode result = search(toolMethodDao, param, (root, query, cb) -> {
+            SpecificationHelper<ToolMethod> helper = SpecificationHelper.newInstance(root, cb, param);
+            helper.equalWithIntGTZero("id").equalWithIntGTZero("toolId")
+                    .equalWithIntNotEmpty("status").equalWithIntNotEmpty("present");
+            List<Predicate> predicates = new ArrayList<>(Arrays.asList(helper.predicates()));
+            if (!DPUtil.empty(keyword)) {
+                List<Predicate> ors = new ArrayList<>();
+                ors.add(cb.or(
+                        cb.like(root.get("name"), "%" + keyword + "%"),
+                        cb.like(root.get("originName"), "%" + keyword + "%"),
+                        cb.like(root.get("title"), "%" + keyword + "%"),
+                        cb.like(root.get("description"), "%" + keyword + "%")));
+                if (!matchedToolIds.isEmpty()) ors.add(root.get("toolId").in(matchedToolIds));
+                predicates.add(cb.or(ors.toArray(new Predicate[0])));
+            }
+            return cb.and(predicates.toArray(new Predicate[0]));
+        }, Sort.by(Sort.Order.asc("toolId"), Sort.Order.asc("sort"), Sort.Order.asc("id")), sorts().keySet());
+        JsonNode rows = ApiUtil.rows(result);
+        fillToolName(rows);
+        if (!DPUtil.empty(args.get("withStatusText"))) fillStatus(rows, status());
+        if (!DPUtil.empty(args.get("withDetail"))) format(rows);
+        return result;
+    }
+
+    /** 补工具名：选择器按「工具 → 方法」分组展示需要 */
+    protected JsonNode fillToolName(JsonNode rows) {
+        if (null == rows) return null;
+        Set<Integer> ids = new LinkedHashSet<>();
+        for (JsonNode row : rows) {
+            int toolId = row.at("/toolId").asInt(0);
+            if (toolId > 0) ids.add(toolId);
+        }
+        if (ids.isEmpty()) return rows;
+        Map<String, String> names = new LinkedHashMap<>();
+        for (Tool tool : toolDao.findAllById(ids)) {
+            names.put(String.valueOf(tool.getId()), tool.getName());
+        }
+        DPUtil.fillValues(rows, "toolId", "toolName", names);
+        return rows;
     }
 
     /** 预览：解析未保存的配置，不给库 */
@@ -688,10 +747,6 @@ public class ToolMethodService extends JPAServiceBase {
     protected String cut(String text, int length) {
         String value = DPUtil.parseString(text);
         return value.length() <= length ? value : value.substring(0, length);
-    }
-
-    protected String hash(String content) {
-        return org.springframework.util.DigestUtils.md5DigestAsHex(DPUtil.parseString(content).getBytes(StandardCharsets.UTF_8));
     }
 
 }

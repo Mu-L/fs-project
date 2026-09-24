@@ -100,8 +100,9 @@ const handleCancelFeedback = () => {
 .chat-feedback {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-size: 14px;
+  /* 与工具条内其它按钮同一口径：间距 6px、图标 12px */
+  gap: 6px;
+  font-size: 12px;
   line-height: 1;
   vertical-align: middle;
   .feedback-trigger {

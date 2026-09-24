@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import java.util.Map;
 
@@ -62,8 +63,8 @@ public class UserController extends PermitControllerBase {
     }
 
     @RequestMapping("/login")
-    public String loginAction(@RequestBody Map<?, ?> param, HttpServletRequest request) {
-        Map<String, Object> result = userService.login(param, request);
+    public String loginAction(@RequestBody Map<?, ?> param, HttpServletRequest request, HttpServletResponse response) {
+        Map<String, Object> result = userService.login(param, request, response);
         return ApiUtil.echoResult(result);
     }
 

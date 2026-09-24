@@ -9,6 +9,7 @@ import type { FormInstance, TableInstance } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import AgenticApi from '@/api/agent/AgenticApi'
 import useChatFeedback from '@/composables/useChatFeedback'
+import useChatBranch from '@/composables/useChatBranch'
 import UserApi from '@/api/member/UserApi'
 import AgenticSteps from '@/components/Agentic/AgenticSteps.vue'
 import AgenticTimeline from '@/components/Agentic/AgenticTimeline.vue'
@@ -28,6 +29,7 @@ const searchable = ref(true)
 const columns = ref([
   { prop: 'id', label: '会话标识' },
   { prop: 'title', label: '会话标题', slot: 'title' },
+  { prop: 'agenticName', label: '所属编排' },
   { prop: 'typeText', label: '类型' },
   { prop: 'deletedText', label: '状态', slot: 'deletedText' },
   { prop: 'createdUid', label: '创建人', slot: 'createdUid' },
@@ -61,7 +63,12 @@ onMounted(() => {
 const infoVisible = ref(false)
 const infoLoading = ref(false)
 const info: any = ref({})
-const messages = computed<any[]>(() => info.value?.messages ?? [])
+/**
+ * 对话分支：消息按 parentId 组成消息树，本页只渲染会话当前分支那条路径，
+ * 同一处有多条分支（编辑提问 / 重新生成产生）时按「◀ 2/3 ▶」回看（见 composables/useChatBranch）
+ */
+const branch = useChatBranch()
+const messages = computed<any[]>(() => branch.visible.value)
 /** 消息区滚动容器：电梯导航按它测量位置与滚动 */
 const chatListRef = ref<HTMLDivElement>()
 // 编排信息取自该会话的运行记录（展示所属应用与标识）
@@ -76,6 +83,8 @@ const loadInfo = (id: any) => {
   infoLoading.value = true
   return AgenticApi.chatInfo(id).then((result: any) => {
     info.value = ApiUtil.data(result) ?? {}
+    // 装载消息树：leafId 是会话当前分支尾，缺失时取最后一条消息
+    branch.setMessages(info.value?.messages, info.value?.leafId)
   }).catch(() => {}).finally(() => {
     infoLoading.value = false
   })
@@ -142,8 +151,8 @@ const { feeding, submit: handleFeedback } = useChatFeedback('该消息不支持�
       </form-search-item>
       <form-search-item label="类型" prop="type">
         <el-select v-model="filters.type" placeholder="请选择" clearable>
-          <el-option value="agentic" label="发布应用" />
-          <el-option value="agentic_draft" label="调试运行" />
+          <el-option value="published" label="发布应用" />
+          <el-option value="draft" label="调试运行" />
         </el-select>
       </form-search-item>
       <form-search-item label="创建开始时间" prop="createdTimeBegin">
@@ -224,6 +233,8 @@ const { feeding, submit: handleFeedback } = useChatFeedback('该消息不支持�
             :avatar="false"
             :time="true"
             :disabled="feeding === item.id"
+            :branch="branch.branchOf(item)"
+            @switch="(step: number) => branch.switchBranch(item, step)"
             @submit="(payload: any) => handleFeedback(item, payload)">
             <!-- 执行过程（顶部）：与流程对话同一形态的轻量时间线，点开时才拉取日志 -->
             <template #steps>
@@ -325,6 +336,13 @@ const { feeding, submit: handleFeedback } = useChatFeedback('该消息不支持�
   :deep(.chat-bubble) {
     display: inline-block;
     max-width: 92%;
+  }
+  /* 用户消息：操作条与气泡同一个列容器，整块最宽 92%；气泡本身按容器满宽收起 */
+  .chat-message.is-user :deep(.chat-main) {
+    max-width: 92%;
+  }
+  .chat-message.is-user :deep(.chat-bubble) {
+    max-width: 100%;
   }
   /* 折叠面板头：默认 48px 对气泡内的过程信息太高，压到 28px（与调试面板一致） */
   :deep(.chat-reasoning .el-collapse-item__header) {

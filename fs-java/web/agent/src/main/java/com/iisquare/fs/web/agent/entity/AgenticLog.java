@@ -8,8 +8,8 @@ import org.hibernate.annotations.DynamicUpdate;
 /**
  * 编排运行日志：每次调试运行（草稿）或外部调用（发布内容）落一条，一轮对话一条。
  *
- * - 归属：agenticId 指向编排应用（Agentic），chatId 指向会话（Chat），均为列关联、无外键约束；
- * - answerId 指向本轮助手回复（ChatDialog.id）：会话回看按该列把「回复 ↔ 运行明细」对上，
+ * - 归属：agenticId 指向编排应用（Agentic），chatId 指向会话（AgenticChat），均为列关联、无外键约束；
+ * - answerId 指向本轮助手回复（AgenticDialog.id）：会话回看按该列把「回复 ↔ 运行明细」对上，
  *   不再解析 outputs JSON；
  * - 大字段（列表接口不返回，详情与「执行过程」按 logId 懒加载）：
  *   inputs 运行入参、outputs 运行输出（写入时已去掉与 inputs / steps 重复的内容）、
@@ -36,7 +36,7 @@ public class AgenticLog {
     @Column
     private Integer chatId; // 所属会话（多轮对话时用于按会话回看每次运行的明细）
     @Column
-    private Integer answerId; // 本轮助手回复的消息标识（fs_agent_chat_dialog.id），回看会话时直接按列关联
+    private Integer answerId; // 本轮助手回复的消息标识（fs_agent_agentic_dialog.id），回看会话时直接按列关联
     @Column
     private String source; // 来源：draft-调试运行，published-外部调用
     @Column

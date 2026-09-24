@@ -23,11 +23,13 @@ import LayoutToolbar from '@/components/Layout/LayoutToolbar.vue'
 import LayoutWidget from '@/components/Layout/LayoutWidget.vue'
 import X6Container from '@/designer/X6/X6Container.vue'
 import useAgenticStream from '@/composables/useAgenticStream'
+import useChatBranch from '@/composables/useChatBranch'
 import useChatFeedback from '@/composables/useChatFeedback'
 import useChatScroll from '@/composables/useChatScroll'
 import { useUserStore } from '@/stores/user'
 import Flow from '@/designer/X6/flow'
 import config from '@/designer/Agentic/config'
+import { upgradeVariables, variableReferences } from '@/designer/Agentic/variable'
 import SwitchLayout from '@/designer/X6/switch'
 import AgenticApi from '@/api/agent/AgenticApi'
 import streams from '@/api/agent/streams'
@@ -263,6 +265,8 @@ const obsoleteTypes = ['IterationStart', 'LoopStart']
  * 载入前整理节点数据
  * - 形状升级：问题分类器早期使用 agent-node（卡片样式），现改为 agent-switch，按分类重建锚点
  * - 历史清理：迭代/循环容器的固定入口节点已不再注册，残留节点、其连线与容器 child 引用一并剔除
+ * - 变量升级：下拉选择器早期保存的是裸引用（`节点标识.变量名`），统一换成占位符，
+ *   否则运行时解析不到取值（问题分类器、知识检索会把标识原样发给模型）
  */
 const normalizeCells = (cells: any[]) => {
   const removed: string[] = []
@@ -277,7 +281,7 @@ const normalizeCells = (cells: any[]) => {
     }
     kept.push(cell)
   })
-  return kept.map((cell: any) => {
+  const result = kept.map((cell: any) => {
     let item: any = cell
     const shape = legacyShapes[cell?.data?.type]
     if (shape && 'agent-node' === cell?.shape) item = Object.assign({}, cell, { shape })
@@ -290,6 +294,11 @@ const normalizeCells = (cells: any[]) => {
   }).filter((cell: any) => {
     if (['flow-edge', 'edge'].indexOf(cell?.shape) === -1) return true
     return removed.indexOf(cell?.source?.cell) === -1 && removed.indexOf(cell?.target?.cell) === -1
+  })
+  const references = variableReferences(result)
+  return result.map((cell: any) => {
+    if (!cell?.data) return cell
+    return Object.assign({}, cell, { data: upgradeVariables(cell.data, references) })
   })
 }
 
@@ -323,7 +332,11 @@ const runInputs: any = ref({})
 const runResult: any = ref(null)
 // 多轮调试：会话标识与消息列表（每条助手消息带上该轮的执行明细）
 const runChatId = ref(0)
-const runMessages: any = ref<any[]>([])
+/** 调试对话的分支视图：消息按 parentId 组成消息树，只渲染当前分支（见 composables/useChatBranch） */
+const branch = useChatBranch()
+const runMessages: any = branch.messages
+/** 模板渲染用：当前分支路径上的消息（尚未落库的流式消息始终可见） */
+const runVisibleMessages = computed<any[]>(() => branch.visible.value)
 const runMessage: any = ref('')
 // 回放令牌：自增即取消上一轮回放（关闭抽屉、新会话、重新回放）
 let playToken = 0
@@ -338,7 +351,7 @@ const handleRunDirection = () => {
 // 新会话：清空消息与会话标识，重新开始一轮对话
 const handleRunNew = () => {
   runChatId.value = 0
-  runMessages.value = []
+  branch.reset()
   runResult.value = null
   // 新会话：终止回放并清掉画布上的运行态高亮
   resetRunState()
@@ -394,8 +407,43 @@ const handleRunChat = () => {
     return
   }
   runMessage.value = ''
-  runMessages.value.push({ role: 'user', content: message || '（按参数运行）' })
-  handleRunSubmit(message)
+  // 续写位置：会话当前分支尾（没有分支时就是最后一条消息）
+  const parentId = Number(branch.activeLeaf.value ?? 0) || 0
+  const question: any = { role: 'user', content: message || '（按参数运行）', parentId }
+  runMessages.value.push(question)
+  handleRunSubmit(message, { parentId, question })
+}
+
+/** 切换分支：按当前消息的兄弟节点前后移动（只影响展示与续写位置） */
+const handleRunSwitch = (item: any, step: number) => {
+  branch.switchBranch(item, step)
+  nextTick(() => scrollRunChat(true))
+}
+
+/** 编辑提问后重新发送：新消息接在被编辑消息的父节点下，形成新分支 */
+const handleRunEdit = (item: any, content: string) => {
+  if (runLoading.value) {
+    ElMessage.warning('上一轮运行还在进行中，请稍候')
+    return
+  }
+  const parentId = Number(item?.parentId ?? 0) || 0
+  const question: any = { role: 'user', content, parentId, createdTime: Date.now() }
+  runMessages.value.push(question)
+  handleRunSubmit(content, { parentId, question })
+}
+
+/** 重新生成回复：不重复落用户消息，只在同一条提问下新增一条助手回复 */
+const handleRunRegenerate = (item: any) => {
+  if (runLoading.value) {
+    ElMessage.warning('上一轮运行还在进行中，请稍候')
+    return
+  }
+  const question: any = runMessages.value.find((row: any) => String(row?.id) === String(item?.parentId))
+  if (!question) {
+    ElMessage.warning('找不到该回复对应的提问，无法重新生成')
+    return
+  }
+  handleRunSubmit(String(question.content ?? ''), { parentId: item.parentId, reuseQuestion: true })
 }
 
 /**
@@ -715,7 +763,7 @@ const handleRun = () => {
   nextTick(() => scrollRunChat())
 }
 
-const handleRunSubmit = (message = '') => {
+const handleRunSubmit = (message = '', options: any = {}) => {
   // 提交前再同步一次：新增/删除参数后必填校验与表单保持一致，不会误报「未填写」
   refreshRunVariables()
   const missing = runVariables.value.filter((item: any) => true === item.required && paramBlank(item))
@@ -737,6 +785,8 @@ const handleRunSubmit = (message = '') => {
   runLoading.value = true
   // 新一轮运行：清掉上一轮的画布运行态与实时进度计数（本轮节点会边执行边着色）
   resetRunState()
+  // 分支位置：新消息接在 parentId 之后（未指定时接在当前分支尾）
+  const parentId = Number(options?.parentId ?? 0) || Number(branch.activeLeaf.value ?? 0) || 0
   // 流式运行：先建好这一轮的助手消息，模型增量到达时实时追加
   // 用 reactive 包一层：push 进数组后仍在改这个对象，直接改原始对象不会触发渲染
   const reply: any = reactive({
@@ -759,17 +809,29 @@ const handleRunSubmit = (message = '') => {
     feedbackEmotion: '',
     feedbackTag: '',
     feedbackContent: '',
+    parentId,
   })
   runMessages.value.push(reply)
+  // 分支视图先切到这条尚未落库的回复：重新生成时上一次的输出随之隐藏，可再用「◀ n/m ▶」切回；
+  // 新提问一并登记，接在会话起点（编辑第一条提问）时也能算出当前分支，不必退回整条会话
+  branch.setPending(reply, options?.question ?? null)
   nextTick(() => scrollRunChat())
-  // 本轮上下文：流式回调按「当前回复」写屏，发送前先登记
+  // 本轮上下文：流式回调按「当前回复」写屏，发送前先登记（重新生成时没有新的用户消息）
   turn.reply = reply
+  turn.question = options?.question ?? null
   streaming.value = true
-  stream.send({ id: diagram.value.id, chatId: runChatId.value, inputs })
+  stream.send({
+    id: diagram.value.id,
+    chatId: runChatId.value,
+    // 分支位置：新消息接在 parentId 之后；reuseQuestion 表示这是重新生成
+    parentId,
+    reuseQuestion: true === options?.reuseQuestion,
+    inputs,
+  })
 }
 
 /** 本轮上下文：流式回调在 send 前登记，回调里只认这一份 */
-const turn: { reply: any } = { reply: null }
+const turn: { reply: any, question: any } = { reply: null, question: null }
 
 /**
  * 流式运行：事件分发与运行状态复位统一收在组合式函数里；
@@ -849,6 +911,10 @@ const applyRunResult = (data: any, reply: any) => {
     // 摘要取第一条异常，详情只放其余异常，避免同一条信息展示两遍
     notice: failures.length ? { summary: failures[0], detail: failures.slice(1).join('\n') } : null,
   })
+  // 落库标识与分支位置：提问补 id、回复补父消息，分支尾指向本轮回复
+  if (turn.question) turn.question.id = data?.questionId ?? turn.question.id ?? 0
+  reply.parentId = data?.questionId ? data.questionId : reply.parentId
+  branch.commit(reply, data?.leafId)
   // 抽屉已关闭：只更新消息，不把运行态画回画布（关闭抽屉即清空状态）
   if (!runVisible.value) return
   const failedId = failedStep(data?.steps ?? [])
@@ -1025,11 +1091,17 @@ onMounted(() => {
         <ChatMessage
           class="run-message"
           :key="index"
-          v-for="(item, index) in runMessages"
+          v-for="(item, index) in runVisibleMessages"
           :item="item"
           :streaming="item.streaming"
           :disabled="feeding === item.id"
-          @submit="(payload: any) => handleRunFeedback(item, payload)">
+          :branch="branch.branchOf(item)"
+          :editable="'user' === item.role && !!item.id && !runLoading"
+          :regenerable="'assistant' === item.role && !!item.id && !runLoading"
+          @submit="(payload: any) => handleRunFeedback(item, payload)"
+          @switch="(step: number) => handleRunSwitch(item, step)"
+          @edit="(content: string) => handleRunEdit(item, content)"
+          @regenerate="handleRunRegenerate(item)">
           <!-- 执行过程（顶部）：与流程对话同一形态的轻量时间线 -->
           <template #steps>
             <AgenticTimeline
@@ -1191,6 +1263,10 @@ onMounted(() => {
     gap: var(--run-gap);
     &.is-user {
       flex-direction: row-reverse;
+      /* 用户气泡外层多了操作条容器（已排过头像），宽度上限按容器算，不再重复扣头像宽度 */
+      :deep(.chat-bubble) {
+        max-width: 100%;
+      }
     }
   }
   :deep(.chat-avatar) {

@@ -7,6 +7,8 @@ export interface VariableItem {
   label?: string
   type: string
   description?: string
+  /** 可写入标记：容器内的元素/索引/循环变量可由「变量赋值」节点覆盖取值 */
+  writable?: boolean
 }
 
 export interface VariableGroup {
@@ -34,6 +36,30 @@ export const variableTitle = (item: any) => String(item?.label || item?.name || 
  * 变量占位符实际值 - 采用 `{{#节点标识.变量英文名称#}}`，如 `{{#n1.query#}}`，用于保存与后端解析
  */
 export const variableToken = (reference: string) => `{{#${reference}#}}`
+
+/**
+ * 变量占位符反向解析 - 整串就是一个占位符时返回其中引用的变量（`节点标识.变量名`），否则返回空串。
+ * 用于只关心「引用了哪个变量」的展示与校验场景（下拉选择器的取值、条件摘要等）
+ */
+export const referenceOfToken = (value: any) => {
+  const matched = String(value ?? '').trim().match(/^\{\{#([^#{}]+)#\}\}$/)
+  return matched ? matched[1] : ''
+}
+
+/** 手工输入的变量引用：系统变量 `sys.xxx` 与会话变量 `conversation.xxx`（画布变量由 variableGroups 提供） */
+const NamedReference = /^(?:sys|conversation)\.[A-Za-z_$][\w$]*$/
+
+/**
+ * 识别取值里的变量引用 - 画布中已有的变量（`节点标识.变量名`）或手工输入的 `sys.xxx` / `conversation.xxx`。
+ * 识别到即返回引用本身，否则返回空串（固定文本、已是占位符）。
+ * 变量引用按统一规范写成占位符 `{{#节点标识.变量名#}}`，后端只解析这种形式
+ */
+export const detectReference = (value: any, references?: Set<string>) => {
+  const text = String(value ?? '').trim()
+  if (!text || referenceOfToken(text)) return ''
+  if (references?.has(text)) return text
+  return NamedReference.test(text) ? text : ''
+}
 
 /**
  * 变量占位符的展示名称 - `节点名称.变量中文名称`，如 `开始.用户输入`
@@ -141,6 +167,8 @@ export const variableGroups = (instance: any, activeItem: any = {}, inner = fals
       label: item.label || item.name,
       type: item.type ?? 'String',
       description: item.description,
+      // 容器内的变量（元素、索引、循环变量）是容器节点的可写入变量
+      writable: Boolean(item.scope),
     }))
     if (!variables.length) return
     result.push({ label: data.name ?? node.id, variables })
@@ -148,7 +176,45 @@ export const variableGroups = (instance: any, activeItem: any = {}, inner = fals
   return result
 }
 
+/**
+ * 画布中全部可被引用的变量（含系统变量）- `节点标识.变量名`。
+ * 供历史数据升级使用：要与画布现有变量比对，手输的会话变量等不在其中
+ */
+export const variableReferences = (cells: any[]) => {
+  const result = new Set<string>(sysVariables.map((item: VariableItem) => item.value))
+  ;(cells ?? []).forEach((cell: any) => {
+    const data = cell?.data ?? {}
+    if (!DesignUtil.widgetByType(data.type, config)) return
+    const items: any[] = config.outputs?.[data.type]?.(data) ?? []
+    items.forEach((item: any) => {
+      if (item?.name) result.add(`${cell.id}.${item.name}`)
+    })
+  })
+  return result
+}
+
+/**
+ * 历史数据升级 - 递归把整串裸引用换成占位符（`节点标识.变量名` → `{{#节点标识.变量名#}}`）。
+ * 早期下拉选择器保存的是裸引用，而运行时只解析占位符，会让问题分类器、知识检索这类节点
+ * 取不到上游入参（把标识原样发给模型）；已是占位符或画布中不存在（如手输的会话变量）的取值保持原样
+ */
+export const upgradeVariables = (value: any, references: Set<string>): any => {
+  if ('string' === typeof value) {
+    const reference = detectReference(value, references)
+    return reference ? variableToken(reference) : value
+  }
+  if (Array.isArray(value)) return value.map((item: any) => upgradeVariables(item, references))
+  if (value && 'object' === typeof value) {
+    const result: Record<string, any> = {}
+    Object.keys(value).forEach((key: string) => {
+      result[key] = upgradeVariables(value[key], references)
+    })
+    return result
+  }
+  return value
+}
+
 export default {
-  variableGroups, variableTokens, variableToken, variableLabel, variableTitle,
-  filterVariableGroups, parseTriggerWord,
+  variableGroups, variableTokens, variableToken, referenceOfToken, detectReference, variableLabel, variableTitle,
+  variableReferences, upgradeVariables, filterVariableGroups, parseTriggerWord,
 }

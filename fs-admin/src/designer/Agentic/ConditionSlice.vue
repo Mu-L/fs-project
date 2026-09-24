@@ -12,6 +12,7 @@ import CollapseItem from './CollapseItem.vue'
 import { useCollapse } from './collapse'
 import config from './config'
 import VariableSelect from './VariableSelect.vue'
+import { referenceOfToken } from './variable'
 
 const model: any = defineModel<any>({ required: true })
 const props = defineProps<{
@@ -48,7 +49,8 @@ const needValue = (operator: string) => config.noValueOperators.indexOf(operator
 
 // 收起时的摘要：变量名与运算符
 const summaryTags = (condition: any) => {
-  const variable = String(condition?.variable ?? '')
+  // 变量的取值是占位符（{{#节点标识.变量名#}}）或手工输入的会话变量，摘要只展示变量名
+  const variable = referenceOfToken(condition?.variable) || String(condition?.variable ?? '')
   const operator: any = config.operators.find((item: any) => item.value === condition?.operator)
   return [
     variable ? variable.split('.').pop() : '未选变量',

@@ -30,21 +30,13 @@ export const layouts = [{
       meta: { title: '流程对话', fit: true, permit: ['agent:agentic:'] },
       component: () => import('@/views/agent/agentic/dialog.vue')
     }, {
-    path: '/agent/setting/agent',
-    meta: { title: '智能体管理', permit: ['agent:agent:'] },
-    component: () => import('@/views/agent/setting/agent.vue')
-  }, {
-    path: '/agent/chat/demo',
-    meta: { title: '模型调试', fit: true, permit: ['agent:chat:demo'] },
-    component: () => import('@/views/agent/chat/demo.vue')
-  }, {
     path: '/agent/chat/compare',
-    meta: { title: '模型对比', permit: ['agent:chat:compare'] },
+    meta: { title: '模型对比', fit: true, permit: ['agent:compare:'] },
     component: () => import('@/views/agent/chat/compare.vue')
   }, {
-    path: '/agent/chat/dialog',
-    meta: { title: '模型对话', fit: true, permit: ['agent:chat:dialog'] },
-    component: () => import('@/views/agent/chat/dialog.vue')
+    path: '/agent/chat/statistic',
+    meta: { title: '对比统计', permit: ['agent:compare:'] },
+    component: () => import('@/views/agent/chat/statistic.vue')
   }, {
     path: '/agent/knowledge/list',
     meta: { title: '知识库', permit: ['agent:knowledge:'] },

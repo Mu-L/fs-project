@@ -108,7 +108,7 @@ public class RbacService extends RbacServiceBase {
     public JsonNode resource(HttpServletRequest request) {
         JsonNode resource = (JsonNode) request.getAttribute(PermitInterceptor.ATTRIBUTE_RESOURCE);
         if (null != resource) return resource;
-        int uid = DPUtil.parseInt(ServletUtil.getSession(request, "uid"));
+        int uid = DPUtil.parseInt(ServletUtil.getSession(request, "uid", false));
         resource = loadResource(uid);
         request.setAttribute(PermitInterceptor.ATTRIBUTE_RESOURCE, resource);
         return resource;
@@ -116,7 +116,7 @@ public class RbacService extends RbacServiceBase {
 
     @Override
     public JsonNode menu(HttpServletRequest request) {
-        int uid = DPUtil.parseInt(ServletUtil.getSession(request, "uid"));
+        int uid = DPUtil.parseInt(ServletUtil.getSession(request, "uid", false));
         return loadMenu(uid);
     }
 
@@ -148,7 +148,7 @@ public class RbacService extends RbacServiceBase {
     }
 
     public Map<String, Object> currentInfo(HttpServletRequest request, Map<?, ?> info) {
-        Map<String, Object> result = ServletUtil.getSessionMap(request);
+        Map<String, Object> result = ServletUtil.getSessionMap(request, false); // 读取当前会话，会话不存在时不创建
         if(null == info) return result;
         for (Map.Entry<?, ?> entry : info.entrySet()) {
             result.put(entry.getKey().toString(), entry.getValue());

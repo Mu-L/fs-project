@@ -23,18 +23,28 @@ export default {
   /** 编排页运行抽屉：同一套协议，只有 uri 不同（/agentic/runStream） */
   agenticRun: { uri: '/agentic/runStream', parse: typed } as AgenticStreamEndpoint,
 
-  /** 模型对话：`{ action, data }`，一条事件里可能带多个增量（/chat/dialog） */
-  chatDialog: {
-    uri: '/chat/dialog',
+  /**
+   * 模型对比：一条连接只跑一个模型（参数逐模型独立，所以不能合并成一条流）。
+   * 报文是 `{ action, data }`（与编排那套不同），把 finish_reason 一并交给页面——
+   * 对比时「为什么停下来」和输出内容一样是要看的。
+   */
+  chatCompare: {
+    uri: '/compare/stream',
     parse: (payload: any): AgenticStreamEvent[] => {
       if ('choices.message' === payload?.action) {
-        // 思考内容与正文各归各的字段，交给页面按 delta 处理
         return (payload.data ?? []).map((item: any) => {
           const delta: any = item?.delta || item?.message || {}
-          return { type: 'delta' as const, data: { reasoning: delta.reasoning_content, content: delta.content } }
+          return {
+            type: 'delta' as const,
+            data: {
+              reasoning: delta.reasoning_content,
+              content: delta.content,
+              finishReason: item?.finish_reason,
+              usage: item?.usage,
+            },
+          }
         })
       }
-      // error.message / error.unknown / error.throwable：本轮到此结束
       if (String(payload?.action ?? '').indexOf('error') === 0) {
         return [{
           type: 'error' as const,

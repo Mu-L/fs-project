@@ -11,6 +11,7 @@
  *
  * 渲染态不直接使用标识作为 src：标识会先换成 loadingImage#协议:标识 这样的占位地址，
  * 避免浏览器按未知协议加载失败，保存时再原样还原，正文里始终只有标识
+ * 只读态双击图片打开查看器，同一段正文里的图片按出现顺序左右切换；编辑态单击图片同样可预览
  *
  * @v-model  {String}   内容（双向绑定主值）
  * @prop     {Boolean}  readonly     - 是否只读（仅预览），默认 false
@@ -224,6 +225,24 @@ const openPreview = (element: HTMLElement) => {
   previewVisible.value = true
 }
 
+/**
+ * 只读预览的图片查看
+ * 图片地址取自渲染结果（知识库图片已按当前授权实时签发），双击图片打开查看器；
+ * 同一段 Markdown 里的图片按出现顺序一起传入，查看器里可左右切换
+ */
+const handlePreviewDblClick = (event: MouseEvent) => {
+  const image = (event.target as Element | null)?.closest?.('img') as HTMLImageElement | null
+  const source = image?.getAttribute('src') || ''
+  // 兜底图不是内容本身，双击它没有可放大的东西
+  if (!source || source === fallbackImage) return
+  const urls = Array.from(previewRef.value?.querySelectorAll('img') ?? [])
+    .map((item) => item.getAttribute('src') || '')
+    .filter((url) => !!url && url !== fallbackImage)
+  previewUrlList.value = urls.length > 0 ? urls : [source]
+  previewIndex.value = Math.max(0, previewUrlList.value.indexOf(source))
+  previewVisible.value = true
+}
+
 const observeEditor = () => {
   const element = editorRef.value
   if (!element || observer) return
@@ -331,7 +350,7 @@ defineExpose({ getContent, setContent })
 
 <template>
   <div class="fs-markdown-editor">
-    <div ref="previewRef" class="fs-markdown-preview vditor-reset" v-if="readonly"></div>
+    <div ref="previewRef" class="fs-markdown-preview vditor-reset" v-if="readonly" @dblclick="handlePreviewDblClick"></div>
     <div ref="editorRef" v-else></div>
     <el-image-viewer
       v-if="previewVisible"
@@ -353,6 +372,11 @@ defineExpose({ getContent, setContent })
   word-break: break-word;
   :deep(p:last-child) {
     margin-bottom: 0;
+  }
+  /* 双击打开查看器：给出可交互的提示 */
+  :deep(img) {
+    max-width: 100%;
+    cursor: zoom-in;
   }
 }
 // 编辑区图片：src 是占位地址（保存时会还原为标识），解析完成后通过 content 换成真实地址

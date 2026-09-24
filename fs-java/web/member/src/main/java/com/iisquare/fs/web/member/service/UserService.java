@@ -18,6 +18,7 @@ import com.iisquare.fs.web.member.entity.Role;
 import com.iisquare.fs.web.member.entity.User;
 import com.iisquare.fs.web.member.entity.UserRole;
 import com.iisquare.fs.web.member.mvc.Configuration;
+import com.iisquare.fs.web.member.mvc.SessionIdResolver;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.servlet.http.HttpSession;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +29,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import java.time.Duration;
 import java.util.*;
@@ -53,6 +55,8 @@ public class UserService extends JPAServiceBase {
     StringRedisTemplate redis;
     @Autowired
     MessageService messageService;
+    @Autowired
+    SessionIdResolver sessionIdResolver;
 
     public static final Integer LOGIN_TRY_TIMES = 6;
     public static final Integer VERIFY_TRY_TIMES = 5; // 邮箱验证码最大尝试次数
@@ -304,12 +308,12 @@ public class UserService extends JPAServiceBase {
     }
 
     public Map<String, Object> logout(HttpServletRequest request) {
-        HttpSession session = request.getSession();
-        session.invalidate(); // Spring Session 会同步清理 Redis 中的会话及索引数据
+        HttpSession session = request.getSession(false);
+        if (null != session) session.invalidate(); // Spring Session 会同步清理 Redis 中的会话及索引数据
         return ApiUtil.result(0, null, null);
     }
 
-    public Map<String, Object> login(Map<?, ?> param, HttpServletRequest request) {
+    public Map<String, Object> login(Map<?, ?> param, HttpServletRequest request, HttpServletResponse response) {
         User info;
         Map<String, Object> session;
         String serial = DPUtil.parseString(param.get("serial"));
@@ -364,7 +368,19 @@ public class UserService extends JPAServiceBase {
             result.put("menu", rbacService.menu(request));
             result.put("resource", rbacService.resource(request));
         }
+        if (null != info) renewSession(request, response); // 仅登录接口在会话有效时续期，其他请求不额外处理
         return ApiUtil.result(0, null, result);
+    }
+
+    /**
+     * 会话有效时重新下发Cookie，刷新浏览器端Max-Age，避免活跃用户在固定时间点被登出
+     * 服务端会话过期时间由Spring Session在访问会话时自动滑动
+     */
+    private void renewSession(HttpServletRequest request, HttpServletResponse response) {
+        if (!sessionIdResolver.hasSessionCookie(request)) return; // 非Cookie方式访问无需续期
+        HttpSession session = request.getSession(false);
+        if (null == session) return;
+        sessionIdResolver.renewSessionId(request, response, session.getId());
     }
 
     public ObjectNode info(HttpServletRequest request, User info) {
@@ -380,7 +396,17 @@ public class UserService extends JPAServiceBase {
         result.put("createdTime", info.getCreatedTime());
         result.put("loginIp", info.getLoginIp());
         result.put("loginTime", info.getLoginTime());
-        result.put("token", request.getSession().getId());
+        HttpSession session = request.getSession(false);
+        if (null != session) { // 会话有效期按最后访问时间滑动，返回给客户端便于提前处理续期或重新登录
+            result.put("token", session.getId());
+            int interval = session.getMaxInactiveInterval();
+            result.put("maxInactiveInterval", interval);
+            if (interval > 0) {
+                long expireTime = session.getLastAccessedTime() + interval * 1000L;
+                result.put("expireTime", expireTime);
+                result.put("remaining", Math.max(0L, expireTime - System.currentTimeMillis()));
+            }
+        }
         return result;
     }
     
@@ -409,7 +435,8 @@ public class UserService extends JPAServiceBase {
         info.setSalt(salt);
         userDao.save(info);
         int count = rbacService.removeSessions(info.getId());// 使该用户所有会话失效
-        request.getSession().invalidate();
+        HttpSession session = request.getSession(false);
+        if (null != session) session.invalidate();
         return ApiUtil.result(0, null, count);
     }
     

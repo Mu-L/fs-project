@@ -50,15 +50,34 @@ public class SessionIdResolver implements HttpSessionIdResolver {
     public void setSessionId(HttpServletRequest request, HttpServletResponse response, String sessionId) {
         if (!sessionId.equals(request.getAttribute(WRITTEN_SESSION_ID_ATTR))) {
             request.setAttribute(WRITTEN_SESSION_ID_ATTR, sessionId);
-            CookieSerializer.CookieValue cookie = new CookieSerializer.CookieValue(request, response, sessionId);
-            cookie.setCookieMaxAge((int) maxAge.toSeconds());
-            this.cookieSerializer.writeCookieValue(cookie);
+            writeCookie(request, response, sessionId);
         }
+    }
+
+    /**
+     * 请求是否携带会话Cookie，用于判断客户端是否为浏览器Cookie方式
+     */
+    public boolean hasSessionCookie(HttpServletRequest request) {
+        return !this.cookieSerializer.readCookieValues(request).isEmpty();
+    }
+
+    /**
+     * 会话仍然有效时重新下发Cookie，刷新浏览器端Max-Age，避免活跃用户在固定时间点被登出
+     */
+    public void renewSessionId(HttpServletRequest request, HttpServletResponse response, String sessionId) {
+        request.setAttribute(WRITTEN_SESSION_ID_ATTR, sessionId);
+        writeCookie(request, response, sessionId);
     }
 
     @Override
     public void expireSession(HttpServletRequest request, HttpServletResponse response) {
         this.cookieSerializer.writeCookieValue(new CookieSerializer.CookieValue(request, response, ""));
+    }
+
+    private void writeCookie(HttpServletRequest request, HttpServletResponse response, String sessionId) {
+        CookieSerializer.CookieValue cookie = new CookieSerializer.CookieValue(request, response, sessionId);
+        cookie.setCookieMaxAge((int) maxAge.toSeconds());
+        this.cookieSerializer.writeCookieValue(cookie);
     }
 
 }

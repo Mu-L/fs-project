@@ -12,7 +12,7 @@ import OutputSlice from './OutputSlice.vue'
 import SectionSlice from './SectionSlice.vue'
 import VariableSelect from './VariableSelect.vue'
 import config from './config'
-import { variableGroups } from './variable'
+import { referenceOfToken, variableGroups } from './variable'
 
 const active = ref('property')
 const model: any = defineModel()
@@ -86,7 +86,9 @@ const handleTypeChange = (group: any) => {
     item.variables.forEach((variable: any) => { references[variable.value] = variable.type })
   })
   ;(group.variables ?? []).forEach((item: any) => {
-    if (item.variable && references[item.variable] !== group.outputType) item.variable = ''
+    // 取值是占位符（{{#节点标识.变量名#}}），类型比对按其中的变量引用
+    const reference = referenceOfToken(item.variable) || String(item.variable ?? '')
+    if (reference && references[reference] !== group.outputType) item.variable = ''
   })
 }
 </script>

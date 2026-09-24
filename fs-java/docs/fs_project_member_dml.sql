@@ -219,7 +219,6 @@ INSERT INTO `fs_member_menu` VALUES (199,'评估历史','知识图谱:知识评�
 INSERT INTO `fs_member_menu` VALUES (200,'图谱探索','知识图谱:知识检索:图谱探索',305,162,'','/kg/retrieval/traverse','',0,1,'',1789185502688,1,1789185502688,1);
 INSERT INTO `fs_member_menu` VALUES (202,'抽取工作台','知识图谱:知识抽取:抽取工作台',305,159,'','/kg/extraction/workbench','',1,1,'',1789200000001,1,1789200000001,1);
 INSERT INTO `fs_member_menu` VALUES (401,'模型对话','智能体:模型对话',308,0,'ChatLineRound','/agent/chat','',100,1,'',1740451465910,1,1778483125800,1);
-INSERT INTO `fs_member_menu` VALUES (402,'模型调试','智能体:模型对话:模型调试',308,401,'','/agent/chat/demo','',0,1,'',1740451485129,1,1741574599116,1);
 INSERT INTO `fs_member_menu` VALUES (403,'运行日志','智能体:智能体:运行日志',308,406,'','/agent/agentic/log','',0,1,'',1741574566694,1,1789866269969,1);
 INSERT INTO `fs_member_menu` VALUES (404,'流程对话','智能体:智能体:流程对话',308,406,'','/agent/agentic/dialog','',100,1,'',1741574622733,1,1790042270250,1);
 INSERT INTO `fs_member_menu` VALUES (405,'模型对比','智能体:模型对话:模型对比',308,401,'','/agent/chat/compare','',90,1,'',1741574675468,1,1741574675468,1);
@@ -235,6 +234,7 @@ INSERT INTO `fs_member_menu` VALUES (414,'系统配置','智能体:系统配置'
 INSERT INTO `fs_member_menu` VALUES (415,'运行状态','智能体:系统配置:运行状态',308,414,'','/agent/setting/state','',0,1,'',1789948800000,1,1789948800000,1);
 INSERT INTO `fs_member_menu` VALUES (416,'运行监控','商业智能:运行监控',31,0,'Stamp','/bi/monitor','',0,1,'',1789948800000,1,1789972930606,1);
 INSERT INTO `fs_member_menu` VALUES (417,'查询日志','商业智能:运行监控:查询日志',31,416,'','/bi/monitor/queryLog','',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_menu` VALUES (418,'对比统计','智能体:模型对话:对比统计',308,401,'','/agent/chat/statistic','',90,1,'',1790229311854,1,1790229311854,1);
 /*!40000 ALTER TABLE `fs_member_menu` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -559,14 +559,6 @@ INSERT INTO `fs_member_resource` VALUES (358,'修改','知识图谱:知识抽取
 INSERT INTO `fs_member_resource` VALUES (359,'删除','知识图谱:知识抽取:删除',305,356,'kg','extract','delete',0,1,'',1789200000007,1,1789200000007,1);
 INSERT INTO `fs_member_resource` VALUES (360,'抽取','知识图谱:知识抽取:抽取',305,356,'kg','extract','run',0,1,'',1789200000008,1,1789200000008,1);
 INSERT INTO `fs_member_resource` VALUES (361,'入图','知识图谱:知识抽取:入图',305,356,'kg','extract','apply',0,1,'',1789200000009,1,1789200000009,1);
-INSERT INTO `fs_member_resource` VALUES (400,'智能体','智能体:智能体',308,0,'agent','agent','',0,1,'',1740032586996,1,1740032586996,1);
-INSERT INTO `fs_member_resource` VALUES (401,'添加','智能体:智能体:添加',308,400,'agent','agent','add',0,1,'',1740032594344,1,1740032594344,1);
-INSERT INTO `fs_member_resource` VALUES (402,'修改','智能体:智能体:修改',308,400,'agent','agent','modify',0,1,'',1740032600462,1,1740032600462,1);
-INSERT INTO `fs_member_resource` VALUES (403,'删除','智能体:智能体:删除',308,400,'agent','agent','delete',0,1,'',1740032606204,1,1740032606204,1);
-INSERT INTO `fs_member_resource` VALUES (404,'模型对话','智能体:模型对话',308,0,'agent','chat','',0,1,'',1740451421631,1,1740451421631,1);
-INSERT INTO `fs_member_resource` VALUES (405,'模型调试','智能体:模型对话:模型调试',308,404,'agent','chat','demo',0,1,'',1740451438830,1,1748746983797,1);
-INSERT INTO `fs_member_resource` VALUES (406,'模型对比','智能体:模型对话:模型对比',308,404,'agent','chat','compare',0,1,'',1748746971726,1,1748746971726,1);
-INSERT INTO `fs_member_resource` VALUES (407,'模型对话','智能体:模型对话:模型对话',308,404,'agent','chat','dialog',0,1,'',1749000959475,1,1749000959475,1);
 INSERT INTO `fs_member_resource` VALUES (408,'智能体','智能体:智能体',308,0,'agent','agentic','',0,1,'',1755650958130,1,1755650958130,1);
 INSERT INTO `fs_member_resource` VALUES (409,'添加','智能体:智能体:添加',308,408,'agent','agentic','add',0,1,'',1755650967309,1,1755650967309,1);
 INSERT INTO `fs_member_resource` VALUES (410,'修改','智能体:智能体:修改',308,408,'agent','agentic','modify',0,1,'',1755650973250,1,1755650973250,1);
@@ -587,6 +579,7 @@ INSERT INTO `fs_member_resource` VALUES (424,'维护','智能体:维护',308,0,'
 INSERT INTO `fs_member_resource` VALUES (425,'重建检索块','智能体:维护:重建检索块',308,424,'agent','maintain','reindexChunk',0,1,'',1789948800000,1,1789948800000,1);
 INSERT INTO `fs_member_resource` VALUES (426,'查询日志','商业智能:查询日志',31,0,'bi','dataQueryLog','',0,1,'',1789948800000,1,1789948800000,1);
 INSERT INTO `fs_member_resource` VALUES (427,'删除','商业智能:查询日志:删除',31,426,'bi','dataQueryLog','delete',0,1,'',1789948800000,1,1789948800000,1);
+INSERT INTO `fs_member_resource` VALUES (428,'模型对比','智能体:模型对比',308,0,'agent','compare','',0,1,'',1790217079731,1,1790217079731,1);
 /*!40000 ALTER TABLE `fs_member_resource` ENABLE KEYS */;
 UNLOCK TABLES;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
@@ -599,4 +592,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-09-22  9:57:57
+-- Dump completed on 2026-09-24 13:56:59

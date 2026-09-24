@@ -12,14 +12,22 @@
  * @prop {Boolean} disabled  反馈按钮是否禁用（反馈正在提交）
  * @prop {Boolean} feedback  是否显示点赞/点踩，默认显示（接口不落库的页面传 false）
  * @prop {Boolean} time      是否在用户气泡里显示时间，默认不显示（助手的时间在工具条里）
+ * @prop {Object}  branch    分支位置 { index, count }：同一处有多条分支时显示切换入口
+ * @prop {Boolean} editable  用户消息是否允许「编辑后重新发送」（新起分支，原分支保留）
+ * @prop {Boolean} regenerable 助手回复是否允许「重新生成」（同一提问下新起一条回复）
  * @attr {String} data-chat-role 消息角色（挂在行根元素上，供电梯导航等按角色定位）
  * @attr {String} data-chat-text 用户消息正文（同上，供取摘要文本）
  * @slot steps 气泡顶部：执行过程（流程对话的时间线、其它页的执行明细）
  * @slot extra 气泡底部：页面自有的补充内容（模型对话的原始输出等）
  * @emits submit 反馈提交：{ emotion, tag, content }
+ * @emits regenerate 重新生成助手回复
+ * @emits switch 切换分支：+1 下一个、-1 上一个
+ * @emits edit 用户消息编辑后重新发送：新内容字符串
  */
-import { computed } from 'vue'
-import { MagicStick, UserFilled } from '@element-plus/icons-vue'
+import { computed, nextTick, ref } from 'vue'
+import { Edit, MagicStick, UserFilled } from '@element-plus/icons-vue'
+import ButtonCopy from '@/components/Button/ButtonCopy.vue'
+import ChatBranches from '@/components/Chat/ChatBranches.vue'
 import ChatLoading from '@/components/Chat/ChatLoading.vue'
 import ChatNotice from '@/components/Chat/ChatNotice.vue'
 import ChatToolbar from '@/components/Chat/ChatToolbar.vue'
@@ -27,6 +35,7 @@ import DataResultChart from '@/components/Data/DataResultChart.vue'
 import MarkdownEditor from '@/components/Editor/MarkdownEditor.vue'
 import AgenticUtil from '@/utils/AgenticUtil'
 import DateUtil from '@/utils/DateUtil'
+import KnowledgeImageUtil from '@/utils/KnowledgeImageUtil'
 
 const props = withDefaults(defineProps<{
   item: any,
@@ -35,15 +44,53 @@ const props = withDefaults(defineProps<{
   disabled?: boolean,
   feedback?: boolean,
   time?: boolean,
+  branch?: { index: number, count: number } | null,
+  editable?: boolean,
+  regenerable?: boolean,
 }>(), {
   streaming: undefined,
   avatar: true,
   disabled: false,
   feedback: true,
   time: false,
+  branch: null,
+  editable: false,
+  regenerable: false,
 })
 
-const emit = defineEmits<{ submit: [payload: any] }>()
+const emit = defineEmits<{
+  submit: [payload: any]
+  regenerate: []
+  switch: [step: number]
+  edit: [content: string]
+}>()
+
+/** 用户消息编辑态：改完重新发送会新起一条分支，原消息与原回复都保留 */
+const editing = ref(false)
+const draft = ref('')
+const editRef = ref<any>()
+const startEdit = () => {
+  draft.value = String(props.item?.content ?? '')
+  editing.value = true
+  nextTick(() => editRef.value?.focus?.())
+}
+const cancelEdit = () => {
+  editing.value = false
+  draft.value = ''
+}
+const submitEdit = () => {
+  const content = String(draft.value ?? '').trim()
+  if (!content) return
+  editing.value = false
+  emit('edit', content)
+}
+/** 编辑框回车发送：Shift / Ctrl / Cmd + Enter 换行，中文输入法组词中的回车不发送 */
+const handleEditEnter = (event: Event | KeyboardEvent) => {
+  const key = event as KeyboardEvent
+  if (key.isComposing || 229 === key.keyCode || key.shiftKey || key.ctrlKey || key.metaKey) return
+  event.preventDefault()
+  submitEdit()
+}
 
 const isUser = computed(() => 'user' === props.item?.role)
 /** 用户消息时间：口径与工具条里的助手时间一致（createdTime 决定显隐） */
@@ -56,6 +103,12 @@ const isStreaming = computed(() => props.streaming ?? !!props.item?.streaming)
 const parts = computed<any[]>(() => AgenticUtil.replyParts(props.item) ?? [])
 /** 空回复：没有正文也没有图表，给个占位避免只剩一个空气泡 */
 const empty = computed(() => isAssistant.value && !isStreaming.value && !props.item?.content && !parts.value.length)
+
+/**
+ * 助手回复里的知识库图片（形如 ![说明](kb:图片标识)）按当前授权实时签发地址：
+ * 每个气泡各自解析，撤权后已落库的历史回复同样只剩默认图，不会继续显示原图
+ */
+const resolveImages = (ids: string[]) => KnowledgeImageUtil.resolve(ids)
 
 /**
  * 流式状态文案：有节点在执行时显示节点名，
@@ -77,57 +130,95 @@ const streamingText = computed(() => {
     </template>
     <template v-else>
       <el-avatar class="chat-avatar" v-if="avatar" :icon="isUser ? UserFilled : MagicStick" />
-      <div class="chat-bubble">
-        <!-- 执行过程（页面自定义）：流程对话的时间线置顶，其它页的执行明细按各自位置传入 -->
-        <slot name="steps" />
-        <!-- 思考过程：流式时直接展示，输出完成后收进折叠面板（与调试面板一致） -->
-        <div class="chat-reasoning-text" v-if="isAssistant && item.reasoning && isStreaming">{{ item.reasoning }}</div>
-        <el-collapse class="chat-reasoning" v-else-if="isAssistant && item.reasoning">
-          <el-collapse-item title="思考过程">
-            <div class="chat-reasoning-text">{{ item.reasoning }}</div>
-          </el-collapse-item>
-        </el-collapse>
-        <!-- 用户提问保持原文 -->
-        <div class="chat-content" v-if="isUser" data-chat-text>{{ item.content }}</div>
-        <!-- 用户消息时间：与助手时间一样贴在气泡底部（可选，按页面口径打开） -->
-        <div class="chat-time" v-if="isUser && time && timeText">{{ timeText }}</div>
-        <!-- 助手回复按 Markdown 渲染
-             （显式判断角色：上面插了用户时间后，这里若继续用 v-else 就会串到时间那个 v-if 上，
-              非历史页会因此把用户消息再按助手回复渲染一遍） -->
-        <template v-if="isAssistant">
-          <template :key="partIndex" v-for="(part, partIndex) in parts">
-            <MarkdownEditor class="chat-markdown" v-if="'text' === part.type" :model-value="part.text" readonly />
-            <DataResultChart
-              class="chat-chart"
-              v-else
-              :type="part.chart.type"
-              :title="part.chart.title"
-              :source="part.chart.source"
-              :categories="part.chart.categories"
-              :series="part.chart.series" />
+      <!-- 消息主体：助手直接是气泡（display:contents 不改变原有布局）；用户是「气泡 + 气泡外操作条」的列容器 -->
+      <div class="chat-main">
+        <div class="chat-bubble">
+          <!-- 执行过程（页面自定义）：流程对话的时间线置顶，其它页的执行明细按各自位置传入 -->
+          <slot name="steps" />
+          <!-- 思考过程：流式时直接展示，输出完成后收进折叠面板（与调试面板一致） -->
+          <div class="chat-reasoning-text" v-if="isAssistant && item.reasoning && isStreaming">{{ item.reasoning }}</div>
+          <el-collapse class="chat-reasoning" v-else-if="isAssistant && item.reasoning">
+            <el-collapse-item title="思考过程">
+              <div class="chat-reasoning-text">{{ item.reasoning }}</div>
+            </el-collapse-item>
+          </el-collapse>
+          <!-- 用户提问保持原文 -->
+          <div class="chat-content" v-if="isUser && !editing" data-chat-text>{{ item.content }}</div>
+          <!-- 编辑提问：改完重新发送会在同一处新起一条分支（原提问与原回复都保留） -->
+          <div class="chat-edit" v-if="isUser && editing">
+            <el-input
+              ref="editRef"
+              v-model="draft"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 8 }"
+              resize="none"
+              @keydown.enter="handleEditEnter" />
+            <div class="chat-edit-tools">
+              <el-button link size="small" @click="cancelEdit">取消</el-button>
+              <el-button type="primary" size="small" :disabled="!String(draft ?? '').trim()" @click="submitEdit">重新发送</el-button>
+            </div>
+          </div>
+          <!-- 助手回复按 Markdown 渲染
+               （显式判断角色：上面插了用户消息的判断后，这里若继续用 v-else 就会串到那个 v-if 上，
+                非历史页会因此把用户消息再按助手回复渲染一遍） -->
+          <template v-if="isAssistant">
+            <template :key="partIndex" v-for="(part, partIndex) in parts">
+              <MarkdownEditor
+                class="chat-markdown"
+                v-if="'text' === part.type"
+                :model-value="part.text"
+                :resolve-images="resolveImages"
+                readonly />
+              <DataResultChart
+                class="chat-chart"
+                v-else
+                :type="part.chart.type"
+                :title="part.chart.title"
+                :source="part.chart.source"
+                :categories="part.chart.categories"
+                :series="part.chart.series" />
+            </template>
           </template>
-        </template>
-        <!-- 没有正文的异常轮次（如角色授权被撤销）：失败原因直接显示在气泡里，不必点图标才知道原因 -->
-        <div class="chat-notice-text" v-if="isAssistant && item.notice && !item.content && !isStreaming">
-          {{ item.notice.summary }}
+          <!-- 没有正文的异常轮次（如角色授权被撤销）：失败原因直接显示在气泡里，不必点图标才知道原因 -->
+          <div class="chat-notice-text" v-if="isAssistant && item.notice && !item.content && !isStreaming">
+            {{ item.notice.summary }}
+          </div>
+          <!-- 空回复：给出占位，避免只剩一个空气泡 -->
+          <div class="chat-content" v-else-if="empty">（无回复内容）</div>
+          <!-- 流式输出中：内容下方显示输出状态 -->
+          <div class="chat-streaming" v-if="isAssistant && isStreaming">
+            <ChatLoading />
+            <span>{{ streamingText }}</span>
+          </div>
+          <!-- 回复工具条：复制 / 反馈 / 时间（空回复与流式中不展示） -->
+          <ChatToolbar
+            class="chat-toolbar"
+            v-if="isAssistant && !isStreaming && (item.content || parts.length)"
+            :item="item"
+            :disabled="disabled"
+            :feedback="feedback"
+            :regenerable="regenerable"
+            :branch="branch"
+            @submit="(payload: any) => emit('submit', payload)"
+            @regenerate="emit('regenerate')"
+            @switch="(step: number) => emit('switch', step)" />
+          <!-- 页面自有的补充内容 -->
+          <slot name="extra" />
         </div>
-        <!-- 空回复：给出占位，避免只剩一个空气泡 -->
-        <div class="chat-content" v-else-if="empty">（无回复内容）</div>
-        <!-- 流式输出中：内容下方显示输出状态 -->
-        <div class="chat-streaming" v-if="isAssistant && isStreaming">
-          <ChatLoading />
-          <span>{{ streamingText }}</span>
+        <!-- 用户消息工具条：复制 / 修改 / 切换分支，放在气泡外（气泡下方，右边缘与气泡对齐） -->
+        <div class="chat-user-toolbar" v-if="isUser && !editing && !isStreaming">
+          <ButtonCopy :content="AgenticUtil.answerText(item.content)" title="复制提问内容" />
+          <el-button
+            class="toolbar-action"
+            link
+            :icon="Edit"
+            title="编辑后重新发送"
+            v-if="editable && !!item.id"
+            @click="startEdit" />
+          <!-- 切换分支：同一处有多条提问/回复时，在当前这条上前后切换 -->
+          <ChatBranches :branch="branch" @switch="(step: any) => emit('switch', step)" />
+          <span class="toolbar-time" v-if="time && timeText">{{ timeText }}</span>
         </div>
-        <!-- 回复工具条：复制 / 反馈 / 时间（空回复与流式中不展示） -->
-        <ChatToolbar
-          class="chat-toolbar"
-          v-if="isAssistant && !isStreaming && (item.content || parts.length)"
-          :item="item"
-          :disabled="disabled"
-          :feedback="feedback"
-          @submit="(payload: any) => emit('submit', payload)" />
-        <!-- 页面自有的补充内容 -->
-        <slot name="extra" />
       </div>
       <!-- 节点回复的异常图标：排在回复气泡右侧 -->
       <ChatNotice v-if="!isUser" :notice="item.notice" />
@@ -160,6 +251,21 @@ const streamingText = computed(() => {
       font-size: 12px;
     }
   }
+}
+/**
+ * 消息主体：助手保持原布局（display: contents 让气泡仍是消息行的直接子元素），
+ * 用户则是「气泡 + 气泡外操作条」的列容器：按内容收宽、靠右，操作条右边缘因此与气泡对齐。
+ */
+.chat-main {
+  display: contents;
+}
+.chat-message.is-user .chat-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 /* 头像：尺寸与配色给出默认值，页面可按自己的列宽覆盖 */
 .chat-message.is-assistant .chat-avatar {
@@ -196,12 +302,59 @@ const streamingText = computed(() => {
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* 用户消息时间：靠右、浅灰，与工具条里的时间同一观感 */
-.chat-time {
-  margin-top: 4px;
-  text-align: right;
-  font-size: 11px;
+/* 编辑提问：与正文同一字号，底部工具行右对齐（取消 / 重新发送） */
+.chat-edit {
+  min-width: 220px;
+  :deep(.el-textarea__inner) {
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .chat-edit-tools {
+    @include flex-end();
+    gap: 8px;
+    margin-top: 4px;
+  }
+}
+/**
+ * 用户消息工具条：放在气泡外、气泡下方（复制 / 修改 / 切换 / 时间）。
+ * 靠 .chat-main 的 align-items: flex-end 与气泡右边缘对齐；间距统一由 gap 控制。
+ */
+.chat-user-toolbar {
+  @include flex-start();
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
   color: var(--el-text-color-placeholder);
+  /* 各按钮统一 18px 高、间距只由 gap 决定：清掉 Element Plus 相邻按钮的 12px 外边距 */
+  :deep(.el-button),
+  :deep(.button-copy) {
+    flex: none;
+    height: 18px;
+    margin: 0;
+    padding: 0;
+    font-size: 12px;
+    line-height: 18px;
+  }
+  .toolbar-action {
+    color: var(--el-text-color-placeholder);
+    &:hover {
+      color: var(--el-color-primary);
+    }
+  }
+  .toolbar-time {
+    flex: none;
+    height: 18px;
+    margin-left: auto;
+    font-size: 11px;
+    line-height: 18px;
+    color: var(--el-text-color-placeholder);
+  }
 }
 /* 没有正文的异常轮次：气泡里直接给出失败原因 */
 .chat-notice-text {

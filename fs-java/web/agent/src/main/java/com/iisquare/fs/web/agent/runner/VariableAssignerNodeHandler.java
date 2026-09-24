@@ -66,51 +66,65 @@ public class VariableAssignerNodeHandler implements AgenticNodeHandler {
 
     protected ObjectNode assigner(AgenticNodeContext ctx, ObjectNode data, Map<String, ObjectNode> outputs, Map<String, Object> context) {
         for (JsonNode item : data.at("/assignments")) {
-            String target = item.at("/target").asText("");
+            // 目标变量与变量引用是同一套规范：{{#容器标识.变量名#}} / {{#conversation.变量名#}}，
+            // 兼容历史数据里直接存的裸取值（容器作用域键、会话变量名）
+            String target = AgenticRuntime.referenceLiteral(item.at("/target").asText(""));
             if (DPUtil.empty(target)) continue;
             Object value = ctx.value("constant".equals(item.at("/source").asText("variable"))
                     ? item.at("/value").asText("")
                     : item.at("/variable").asText(""), outputs, context);
             String operation = item.at("/operation").asText("set");
-            // 目标是容器作用域里的变量（循环变量、元素、索引）时写回作用域，容器内节点据此覆盖取值
-            ObjectNode scope = ctx.scopeOf(target);
+            // 目标是容器作用域里的变量（循环变量、元素、索引）时写回作用域，容器内节点据此覆盖取值：
+            // 引用里的容器标识定位到对应容器的作用域，嵌套容器里的同名变量也能区分
+            ObjectNode scope = null;
+            String name = target;
+            int dot = target.lastIndexOf('.');
+            if (dot > 0) {
+                ObjectNode scoped = ctx.scopes().get(target.substring(0, dot));
+                if (null != scoped) {
+                    scope = scoped;
+                    name = target.substring(dot + 1);
+                }
+            }
+            // 历史数据：不带容器标识的裸变量名按作用域键兜底
+            if (null == scope) scope = ctx.scopeOf(target);
             if (null != scope) {
-                Object exists = scope.get(target);
+                Object exists = scope.get(name);
                 switch (operation) {
                     case "append":
-                        scope.put(target, ctx.runtime().scalar(exists) + ctx.runtime().scalar(value));
+                        scope.put(name, ctx.runtime().scalar(exists) + ctx.runtime().scalar(value));
                         break;
                     case "increment":
-                        scope.put(target, DPUtil.parseInt(exists) + DPUtil.parseInt(value));
+                        scope.put(name, DPUtil.parseInt(exists) + DPUtil.parseInt(value));
                         break;
                     case "decrement":
-                        scope.put(target, DPUtil.parseInt(exists) - DPUtil.parseInt(value));
+                        scope.put(name, DPUtil.parseInt(exists) - DPUtil.parseInt(value));
                         break;
                     case "clear":
-                        scope.put(target, "");
+                        scope.put(name, "");
                         break;
                     default:
-                        scope.set(target, DPUtil.toJSON(value));
+                        scope.set(name, DPUtil.toJSON(value));
                         break;
                 }
                 continue;
             }
-            Object exists = context.get(target);
+            Object exists = context.get(name);
             switch (operation) {
                 case "append":
-                    context.put(target, ctx.runtime().scalar(exists) + ctx.runtime().scalar(value));
+                    context.put(name, ctx.runtime().scalar(exists) + ctx.runtime().scalar(value));
                     break;
                 case "increment":
-                    context.put(target, DPUtil.parseInt(exists) + DPUtil.parseInt(value));
+                    context.put(name, DPUtil.parseInt(exists) + DPUtil.parseInt(value));
                     break;
                 case "decrement":
-                    context.put(target, DPUtil.parseInt(exists) - DPUtil.parseInt(value));
+                    context.put(name, DPUtil.parseInt(exists) - DPUtil.parseInt(value));
                     break;
                 case "clear":
-                    context.remove(target);
+                    context.remove(name);
                     break;
                 default:
-                    context.put(target, value);
+                    context.put(name, value);
                     break;
             }
         }

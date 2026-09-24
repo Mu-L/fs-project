@@ -8,14 +8,14 @@ import com.iisquare.fs.base.core.util.DPUtil;
 import com.iisquare.fs.base.core.util.ValidateUtil;
 import com.iisquare.fs.base.jpa.helper.SpecificationHelper;
 import com.iisquare.fs.base.jpa.mvc.JPAServiceBase;
+import com.iisquare.fs.web.agent.dao.AgenticChatDao;
 import com.iisquare.fs.web.agent.dao.AgenticDao;
+import com.iisquare.fs.web.agent.dao.AgenticDialogDao;
 import com.iisquare.fs.web.agent.dao.AgenticLogDao;
-import com.iisquare.fs.web.agent.dao.ChatDao;
-import com.iisquare.fs.web.agent.dao.ChatDialogDao;
 import com.iisquare.fs.web.agent.entity.Agentic;
+import com.iisquare.fs.web.agent.entity.AgenticChat;
+import com.iisquare.fs.web.agent.entity.AgenticDialog;
 import com.iisquare.fs.web.agent.entity.AgenticLog;
-import com.iisquare.fs.web.agent.entity.Chat;
-import com.iisquare.fs.web.agent.entity.ChatDialog;
 import com.iisquare.fs.web.agent.entity.Tool;
 import com.iisquare.fs.web.agent.entity.ToolMethod;
 import com.iisquare.fs.web.agent.mvc.Configuration;
@@ -73,9 +73,9 @@ public class AgenticService extends JPAServiceBase {
     @Autowired
     AgenticLogDao agenticLogDao;
     @Autowired
-    ChatDao chatDao;
+    AgenticChatDao agenticChatDao;
     @Autowired
-    ChatDialogDao chatDialogDao;
+    AgenticDialogDao agenticDialogDao;
     @Autowired
     FileRpc fileRpc;
     @Autowired
@@ -580,20 +580,27 @@ public class AgenticService extends JPAServiceBase {
         if (null == content || !content.isObject()) return ApiUtil.result(1001, "编排内容为空，请先保存", id);
         ObjectNode inputs = parseObject(param.get("inputs"));
         Integer uid = rbacService.uid(request);
-        // 多轮对话：调试运行与发布应用的会话分开存，草稿用 agentic_draft
+        // 多轮对话：调试运行与发布应用的会话分开存（draft / published），且只能续写自己的会话
         String query = query(inputs);
-        Integer chatId = DPUtil.parseInt(param.get("chatId"));
+        Integer existsId = ownedChatId(DPUtil.parseInt(param.get("chatId")), info, CHAT_DRAFT, uid);
         // 仅新建会话时校验必填参数：继续对话的入参已随会话带入，不再重复要求
-        if (isNewChat(chatId)) {
+        if (0 == existsId) {
             String absent = missingInputs(content, inputs);
             if (!DPUtil.empty(absent)) return ApiUtil.result(1004, "缺少必填参数：" + absent, absent);
         }
-        Chat chat = resolveChat(chatId, CHAT_DRAFT, query, uid);
+        AgenticChat chat = resolveChat(existsId, info, CHAT_DRAFT, query, uid);
+        // 分支位置：未传 parentId 接在会话当前分支尾，显式传 0 从会话起点新起分支；
+        // reuseQuestion 表示重新生成，不重复落用户消息
+        Integer parentId = parentId(param);
+        Integer branch = branchOf(chat, parentId);
+        // 显式从会话起点新起分支（编辑第一条提问重新发送）：本轮模型上下文为空，不能退回全部消息
+        boolean branchStart = null != parentId && parentId <= 0;
+        boolean reuseQuestion = DPUtil.parseBoolean(param.get("reuseQuestion"));
         prepareRuntime(uid, request);
         long begin = System.currentTimeMillis();
         ObjectNode result;
         try {
-            result = agenticRunner.execute(content, inputs, history(chat.getId()), system(info, chat, uid, request));
+            result = agenticRunner.execute(content, inputs, history(chat.getId(), branch, branchStart), system(info, chat, uid, request));
         } catch (Exception e) {
             return failureResult(info, chat.getId(), "draft", 0, inputs, e, System.currentTimeMillis() - begin, uid, request);
         }
@@ -603,11 +610,8 @@ public class AgenticService extends JPAServiceBase {
         result.put("source", "draft"); // 调试运行使用保存后的草稿内容
         result.set("inputs", inputs);
         result.put("chatId", chat.getId());
-        ChatDialog question = appendDialog(chat, "user", DPUtil.empty(query) ? DPUtil.stringify(inputs) : query, "", "", uid);
-        ChatDialog reply = appendDialog(chat, "assistant", result.at("/answer").asText(""), reasoning(result), reference(result), uid);
-        // 消息标识回传前端，调试面板可直接对本轮回复做反馈
-        result.put("questionId", null == question ? 0 : question.getId());
-        result.put("answerId", null == reply ? 0 : reply.getId());
+        // 消息落库与标识回传：前端按 answerId 对本轮回复做反馈，按 questionId/leafId 续写或新起分支
+        appendTurn(chat, branch, reuseQuestion, result, query, inputs, uid);
         AgenticLog log = writeLog(info, chat.getId(), "draft", 0, inputs, result, uid, request);
         result.put("logId", null == log ? 0 : log.getId());
         return ApiUtil.result(0, null, result);
@@ -631,18 +635,25 @@ public class AgenticService extends JPAServiceBase {
         ObjectNode inputs = parseObject(param.get("inputs"));
         Integer uid = rbacService.uid(request);
         String query = query(inputs);
-        Integer chatId = DPUtil.parseInt(param.get("chatId"));
+        Integer existsId = ownedChatId(DPUtil.parseInt(param.get("chatId")), info, CHAT_PUBLISHED, uid);
         // 仅新建会话时校验必填参数：继续对话的入参已随会话带入，不再重复要求
-        if (isNewChat(chatId)) {
+        if (0 == existsId) {
             String absent = missingInputs(content, inputs);
             if (!DPUtil.empty(absent)) return ApiUtil.result(1004, "缺少必填参数：" + absent, absent);
         }
-        Chat chat = resolveChat(chatId, CHAT_PUBLISHED, query, uid);
+        AgenticChat chat = resolveChat(existsId, info, CHAT_PUBLISHED, query, uid);
+        // 分支位置：未传 parentId 接在会话当前分支尾，显式传 0 从会话起点新起分支；
+        // reuseQuestion 表示重新生成，不重复落用户消息
+        Integer parentId = parentId(param);
+        Integer branch = branchOf(chat, parentId);
+        // 显式从会话起点新起分支（编辑第一条提问重新发送）：本轮模型上下文为空，不能退回全部消息
+        boolean branchStart = null != parentId && parentId <= 0;
+        boolean reuseQuestion = DPUtil.parseBoolean(param.get("reuseQuestion"));
         prepareRuntime(uid, request);
         long begin = System.currentTimeMillis();
         ObjectNode result;
         try {
-            result = agenticRunner.execute(content, inputs, history(chat.getId()), system(info, chat, uid, request));
+            result = agenticRunner.execute(content, inputs, history(chat.getId(), branch, branchStart), system(info, chat, uid, request));
         } catch (Exception e) {
             return failureResult(info, chat.getId(), "published", version, inputs, e, System.currentTimeMillis() - begin, uid, request);
         }
@@ -654,11 +665,8 @@ public class AgenticService extends JPAServiceBase {
         result.put("source", "published");
         result.set("inputs", inputs);
         result.put("chatId", chat.getId());
-        ChatDialog question = appendDialog(chat, "user", DPUtil.empty(query) ? DPUtil.stringify(inputs) : query, "", "", uid);
-        ChatDialog reply = appendDialog(chat, "assistant", result.at("/answer").asText(""), reasoning(result), reference(result), uid);
-        // 消息标识回传前端，调试面板可直接对本轮回复做反馈
-        result.put("questionId", null == question ? 0 : question.getId());
-        result.put("answerId", null == reply ? 0 : reply.getId());
+        // 消息落库与标识回传：前端按 answerId 对本轮回复做反馈，按 questionId/leafId 续写或新起分支
+        appendTurn(chat, branch, reuseQuestion, result, query, inputs, uid);
         AgenticLog log = writeLog(info, chat.getId(), "published", version, inputs, result, uid, request);
         result.put("logId", null == log ? 0 : log.getId());
         return ApiUtil.result(0, null, result);
@@ -666,9 +674,9 @@ public class AgenticService extends JPAServiceBase {
 
     /* ------------------------------- 会话与历史 ------------------------------- */
 
-    /** 会话类型：调试运行与发布应用分开，避免调试记录混进线上会话 */
-    public static final String CHAT_DRAFT = "agentic_draft";
-    public static final String CHAT_PUBLISHED = "agentic";
+    /** 会话类型：调试运行与发布应用分开，避免调试记录混进线上会话（与运行日志的 source 取值一致） */
+    public static final String CHAT_DRAFT = "draft";
+    public static final String CHAT_PUBLISHED = "published";
 
     /**
      * 入参校验：开始节点里声明为必填的自定义参数是否都有取值（与设计器调试表单的必填规则一致），
@@ -711,7 +719,7 @@ public class AgenticService extends JPAServiceBase {
      * 时间按东八区格式化，一次运行内所有节点取到同一时刻：
      * datetime 为「yyyy-MM-dd HH:mm:ss」，date 为「yyyy-MM-dd」。
      */
-    protected Map<String, Object> system(Agentic info, Chat chat, Integer uid, HttpServletRequest request) {
+    protected Map<String, Object> system(Agentic info, AgenticChat chat, Integer uid, HttpServletRequest request) {
         JsonNode user = currentUser(request);
         Map<String, Object> system = new LinkedHashMap<>();
         system.put("appId", String.valueOf(info.getId()));
@@ -739,41 +747,70 @@ public class AgenticService extends JPAServiceBase {
         return DPUtil.empty(query) ? "" : DPUtil.trim(query);
     }
 
-    /** 是否为新会话：chatId 为空或对应会话不存在时，按新会话处理 */
-    protected boolean isNewChat(Integer chatId) {
-        return null == chatId || chatId <= 0 || null == info(chatDao, chatId);
+    /**
+     * 可续写的会话标识：会话必须存在、未删除，且属于同一编排、同一类型、同一用户。
+     * 不满足时返回 0（按新会话处理），避免拿别人的 chatId 续写或读到他人会话。
+     */
+    protected Integer ownedChatId(Integer chatId, Agentic info, String type, Integer uid) {
+        if (null == chatId || chatId <= 0) return 0;
+        AgenticChat chat = info(agenticChatDao, chatId);
+        if (null == chat) return 0;
+        if (null != chat.getDeletedTime() && chat.getDeletedTime() > 0) return 0;
+        if (!Objects.equals(chat.getAgenticId(), info.getId())) return 0;
+        if (!type.equals(DPUtil.parseString(chat.getType()))) return 0;
+        if (!Objects.equals(chat.getCreatedUid(), null == uid ? 0 : uid)) return 0;
+        return chat.getId();
     }
 
     /** 取会话：chatId 有效时复用，否则按标题新建（标题取用户输入前 60 字） */
-    protected Chat resolveChat(Integer chatId, String type, String title, Integer uid) {
+    protected AgenticChat resolveChat(Integer chatId, Agentic info, String type, String title, Integer uid) {
         if (null != chatId && chatId > 0) {
-            Chat exists = info(chatDao, chatId);
+            AgenticChat exists = info(agenticChatDao, chatId);
             if (null != exists) return exists;
         }
         long now = System.currentTimeMillis();
-        Chat chat = Chat.builder()
+        AgenticChat chat = AgenticChat.builder()
+                .agenticId(info.getId())
                 .title(DPUtil.empty(title) ? "新会话" : cut(title, 60))
                 .type(type)
+                .leafId(0)
                 .createdTime(now)
                 .createdUid(null == uid ? 0 : uid)
                 .updatedTime(now)
                 .updatedUid(null == uid ? 0 : uid)
                 // 各字段显式赋初值：@DynamicInsert 省略 null 字段，文本列没有默认值
-                .deletedReason("")
-                .deletedDetail("")
                 .deletedTime(0L)
                 .deletedUid(0)
                 .build();
-        return chatDao.save(chat);
+        return agenticChatDao.save(chat);
     }
 
-    /** 会话历史：按时间正序取最近若干轮，供模型作为上下文 */
-    protected ArrayNode history(Integer chatId) {
+    /**
+     * 会话历史（模型上下文）：从 leafId 沿 parentId 回溯出当前分支，按时间正序返回最近若干轮。
+     * branchStart 表示本轮显式从会话起点新起分支，此时上下文就是空的；
+     * 其余情况 leafId 为空或该消息已不存在时回退成整条会话的线性历史（迁移前的数据没有消息链）。
+     */
+    protected ArrayNode history(Integer chatId, Integer leafId, boolean branchStart) {
         ArrayNode result = DPUtil.arrayNode();
         if (null == chatId || chatId < 1) return result;
-        List<ChatDialog> rows = chatDialogDao.findAll((root, query, cb) -> cb.equal(root.get("chatId"), chatId),
+        List<AgenticDialog> rows = agenticDialogDao.findAll((root, query, cb) -> cb.equal(root.get("chatId"), chatId),
                 Sort.by(Sort.Order.asc("id")));
-        for (ChatDialog row : rows) {
+        Map<Integer, AgenticDialog> byId = new LinkedHashMap<>();
+        for (AgenticDialog row : rows) byId.put(row.getId(), row);
+        List<AgenticDialog> branch = new ArrayList<>();
+        Set<Integer> visited = new LinkedHashSet<>();
+        Integer current = null == leafId ? 0 : leafId;
+        while (null != current && current > 0 && visited.add(current)) {
+            AgenticDialog row = byId.get(current);
+            if (null == row) break;
+            branch.add(row);
+            current = row.getParentId();
+        }
+        Collections.reverse(branch);
+        // 分支起点重发（branchStart）时上下文就是空的，不能退回全部消息，否则新分支会读到旧分支的问答；
+        // 其余情况（早期数据没有分支尾）仍退回全部消息，保持升级前的上下文口径
+        if (branch.isEmpty() && !branchStart) branch = rows;
+        for (AgenticDialog row : branch) {
             // 标记删除的消息不进模型上下文
             if (null != row.getDeletedTime() && row.getDeletedTime() > 0) continue;
             if (!Arrays.asList("user", "assistant").contains(DPUtil.parseString(row.getRole()))) continue;
@@ -791,6 +828,31 @@ public class AgenticService extends JPAServiceBase {
             }
         }
         return result;
+    }
+
+    /**
+     * 本次运行的父消息：未传（或传空）表示沿用会话当前分支尾；
+     * 显式传 0 表示从会话起点新起分支（编辑第一条提问重新发送时，它的父消息就是分支起点），
+     * 因此这里必须区分「没传」与「传了 0」，否则父消息是分支起点的重新发送会被当成接在分支尾。
+     */
+    protected Integer parentId(Map<?, ?> param) {
+        Object value = param.get("parentId");
+        if (null == value || DPUtil.empty(DPUtil.parseString(value))) return null;
+        return DPUtil.parseInt(value);
+    }
+
+    /**
+     * 本次运行的分支位置：parentId 指定从哪条消息往下续写，
+     * null 表示未指定（沿用会话当前分支尾），0 表示从会话起点新起分支。
+     * parentId 不属于本会话时按当前分支尾处理，避免跨会话拼上下文。
+     */
+    protected Integer branchOf(AgenticChat chat, Integer parentId) {
+        Integer leaf = null == chat.getLeafId() ? 0 : chat.getLeafId();
+        if (null == parentId) return leaf;
+        if (parentId <= 0) return 0;
+        AgenticDialog row = info(agenticDialogDao, parentId);
+        if (null == row || !Objects.equals(row.getChatId(), chat.getId())) return leaf;
+        return row.getId();
     }
 
     /**
@@ -838,40 +900,58 @@ public class AgenticService extends JPAServiceBase {
         return null != charts && charts.isArray() ? (ArrayNode) charts : DPUtil.arrayNode();
     }
 
-    /** 追加会话消息并刷新会话的更新时间（reference 存本轮的工具调用明细） */
-    protected ChatDialog appendDialog(Chat chat, String role, String content, String reasoning, String reference, Integer uid) {
+    /**
+     * 追加会话消息：parentId 指定这条消息接在哪条消息之后（0 表示分支起点）；
+     * 追加后把会话的 leafId 指向新消息（当前分支尾）并刷新更新时间，reference 存本轮的工具调用明细。
+     */
+    protected AgenticDialog appendDialog(AgenticChat chat, Integer parentId, String role, String content, String reasoning, String reference, Integer uid) {
         if (DPUtil.empty(content)) return null;
         // @DynamicInsert 会省略 null 字段，text/longtext 列在 MySQL 中没有默认值，
         // 因此这里把各字段显式赋初值（不在实体与建表语句上做默认值）
-        ChatDialog dialog = ChatDialog.builder()
+        AgenticDialog dialog = AgenticDialog.builder()
                 .chatId(chat.getId())
-                .parentId(0)
+                .parentId(null == parentId || parentId < 0 ? 0 : parentId)
                 .role(role)
                 .content(DPUtil.parseString(content))
                 .reasoningContent(DPUtil.parseString(reasoning))
-                .intent("")
                 .reference(DPUtil.parseString(reference))
-                .finishReason("")
                 .feedbackEmotion("")
                 .feedbackTag("")
                 .feedbackContent("")
                 .feedbackTime(0L)
                 .createdTime(System.currentTimeMillis())
                 .createdUid(null == uid ? 0 : uid)
-                .auditReason("")
-                .auditDetail("")
-                .auditTime(0L)
-                .auditUid(0)
-                .deletedReason("")
-                .deletedDetail("")
                 .deletedTime(0L)
                 .deletedUid(0)
                 .build();
-        ChatDialog saved = chatDialogDao.save(dialog);
+        AgenticDialog saved = agenticDialogDao.save(dialog);
+        chat.setLeafId(saved.getId());
         chat.setUpdatedTime(System.currentTimeMillis());
         chat.setUpdatedUid(null == uid ? 0 : uid);
-        chatDao.save(chat);
+        agenticChatDao.save(chat);
         return saved;
+    }
+
+    /**
+     * 落库一轮对话：正常提问追加「用户提问 + 助手回复」；
+     * 重新生成（reuseQuestion=true）只追加助手回复，挂在被重新生成的那条用户消息下，形成新分支。
+     * 消息标识（questionId / answerId / leafId）随运行结果回传，前端据此反馈、续写或切换分支。
+     */
+    protected AgenticDialog appendTurn(AgenticChat chat, Integer branch, boolean reuseQuestion,
+                                       ObjectNode result, String query, ObjectNode inputs, Integer uid) {
+        AgenticDialog question = null;
+        Integer parentId = branch;
+        if (!reuseQuestion) {
+            question = appendDialog(chat, branch, "user",
+                    DPUtil.empty(query) ? DPUtil.stringify(inputs) : query, "", "", uid);
+            parentId = null == question ? branch : question.getId();
+        }
+        AgenticDialog reply = appendDialog(chat, parentId, "assistant",
+                result.at("/answer").asText(""), reasoning(result), reference(result), uid);
+        result.put("questionId", null == question ? 0 : question.getId());
+        result.put("answerId", null == reply ? 0 : reply.getId());
+        result.put("leafId", null == chat.getLeafId() ? 0 : chat.getLeafId());
+        return reply;
     }
 
     /** 回复的思考过程：取第一个大模型节点输出的 reasoning */
@@ -885,21 +965,13 @@ public class AgenticService extends JPAServiceBase {
 
     /** 会话列表：只看编排产生的会话（调试与发布），支持按标题检索 */
     public ObjectNode chatSearch(Map<String, Object> param, Map<?, ?> args) {
-        ObjectNode result = search(chatDao, param, (root, query, cb) -> {
-            SpecificationHelper<Chat> helper = SpecificationHelper.newInstance(root, cb, param);
+        ObjectNode result = search(agenticChatDao, param, (root, query, cb) -> {
+            SpecificationHelper<AgenticChat> helper = SpecificationHelper.newInstance(root, cb, param);
             helper.dateFormat(configuration.getFormatDate()).equalWithIntGTZero("id")
-                    .equalWithIntGTZero("createdUid").equal("type").like("title");
+                    .equalWithIntGTZero("agenticId").equalWithIntGTZero("createdUid").equal("type").like("title");
             List<jakarta.persistence.criteria.Predicate> predicates = new ArrayList<>(Arrays.asList(helper.predicates()));
             predicates.add(cb.in(root.get("type")).value(Arrays.asList(CHAT_DRAFT, CHAT_PUBLISHED)));
             addDeleted(predicates, root, cb, param);
-            // 按流程筛选会话：会话表没有流程字段，用运行日志的子查询（该流程有运行记录的会话）
-            int agenticId = DPUtil.parseInt(param.get("agenticId"));
-            if (agenticId > 0) {
-                jakarta.persistence.criteria.Subquery<Integer> sub = query.subquery(Integer.class);
-                jakarta.persistence.criteria.Root<AgenticLog> logRoot = sub.from(AgenticLog.class);
-                sub.select(logRoot.get("chatId")).where(cb.equal(logRoot.get("agenticId"), agenticId));
-                predicates.add(root.get("id").in(sub));
-            }
             return cb.and(predicates.toArray(new jakarta.persistence.criteria.Predicate[0]));
         }, Sort.by(Sort.Order.desc("updatedTime"), Sort.Order.desc("id")), Arrays.asList("id", "updatedTime", "createdTime"));
         JsonNode rows = ApiUtil.rows(result);
@@ -908,15 +980,18 @@ public class AgenticService extends JPAServiceBase {
             node.put("typeText", CHAT_PUBLISHED.equals(node.at("/type").asText("")) ? "发布应用" : "调试运行");
             node.put("deletedText", node.at("/deletedTime").asLong(0) > 0 ? "已删除" : "正常");
         }
+        // 所属编排按 agenticId 关联填充：列表直接展示编排名称，不必再逐条打开会话
+        fillAgenticName(rows);
         if (!DPUtil.empty(args.get("withUserInfo"))) {
-            rbacService.fillUserInfo(rows, "createdUid", "updatedUid");
+            // 删除人随列表返回：排查「谁删了这条会话」时不必再连库
+            rbacService.fillUserInfo(rows, "createdUid", "updatedUid", "deletedUid");
         }
         return result;
     }
 
     /** 会话详情：消息列表 + 每轮运行日志（按钮点开可看节点与工具明细） */
     public ObjectNode chatInfo(Integer chatId) {
-        Chat chat = null == chatId ? null : info(chatDao, chatId);
+        AgenticChat chat = null == chatId ? null : info(agenticChatDao, chatId);
         if (null == chat) return null;
         ObjectNode result = (ObjectNode) DPUtil.toJSON(List.of(chat)).get(0);
         result.put("typeText", CHAT_PUBLISHED.equals(chat.getType()) ? "发布应用" : "调试运行");
@@ -937,14 +1012,16 @@ public class AgenticService extends JPAServiceBase {
             JsonNode failures = parseArray(DPUtil.parseString(log.getFailures()));
             if (!failures.isEmpty()) failuresByLog.put(log.getId(), failures);
         }
-        List<ChatDialog> dialogs = chatDialogDao.findAll((root, query, cb) -> cb.and(
+        List<AgenticDialog> dialogs = agenticDialogDao.findAll((root, query, cb) -> cb.and(
                 cb.equal(root.get("chatId"), chatId),
                 cb.equal(root.get("deletedTime"), 0L)), Sort.by(Sort.Order.asc("id")));
         ArrayNode messages = result.putArray("messages");
-        for (ChatDialog dialog : dialogs) {
+        for (AgenticDialog dialog : dialogs) {
             if (dialog.getDeletedTime() != null && dialog.getDeletedTime() > 0) continue;
             ObjectNode node = messages.addObject();
             node.put("id", dialog.getId());
+            // 父消息标识：前端按它把消息还原成树，支持多条分支之间切换
+            node.put("parentId", null == dialog.getParentId() ? 0 : dialog.getParentId());
             node.put("role", DPUtil.parseString(dialog.getRole()));
             node.put("content", DPUtil.parseString(dialog.getContent()));
             node.put("reasoning", DPUtil.parseString(dialog.getReasoningContent()));
@@ -1036,9 +1113,9 @@ public class AgenticService extends JPAServiceBase {
      * 消息反馈：对助手回复点赞/点踩，可附标签与说明；再次提交同一情绪表示取消反馈。
      * 反馈只做运营分析，不参与对话上下文。
      */
-    public ChatDialog chatFeedback(Integer dialogId, String emotion, String tag, String content) {
+    public AgenticDialog chatFeedback(Integer dialogId, String emotion, String tag, String content) {
         if (null == dialogId || dialogId <= 0) return null;
-        ChatDialog dialog = info(chatDialogDao, dialogId);
+        AgenticDialog dialog = info(agenticDialogDao, dialogId);
         if (null == dialog) return null;
         String next = Arrays.asList("positive", "negative").contains(emotion) ? emotion : "";
         // 再次点击同一情绪即取消，避免误操作无法撤回
@@ -1047,7 +1124,7 @@ public class AgenticService extends JPAServiceBase {
         dialog.setFeedbackTag(DPUtil.empty(next) ? "" : DPUtil.parseString(tag));
         dialog.setFeedbackContent(DPUtil.empty(next) ? "" : DPUtil.parseString(content));
         dialog.setFeedbackTime(DPUtil.empty(next) ? 0L : System.currentTimeMillis());
-        return chatDialogDao.save(dialog);
+        return agenticDialogDao.save(dialog);
     }
 
     /**
@@ -1059,16 +1136,16 @@ public class AgenticService extends JPAServiceBase {
         int uid = rbacService.uid(request);
         long time = System.currentTimeMillis();
         for (Integer id : ids) {
-            Chat chat = id > 0 ? info(chatDao, id) : null;
+            AgenticChat chat = id > 0 ? info(agenticChatDao, id) : null;
             if (null == chat) continue;
             markDeleted(chat, uid, time);
-            save(chatDao, chat, uid);
+            save(agenticChatDao, chat, uid);
             // 只处理未删除的子记录：已删除消息/日志不再重复打标记
-            List<ChatDialog> dialogs = chatDialogDao.findAll((root, query, cb) -> cb.and(
+            List<AgenticDialog> dialogs = agenticDialogDao.findAll((root, query, cb) -> cb.and(
                     cb.equal(root.get("chatId"), id), cb.equal(root.get("deletedTime"), 0L)));
-            for (ChatDialog dialog : dialogs) {
+            for (AgenticDialog dialog : dialogs) {
                 markDeleted(dialog, uid, time);
-                save(chatDialogDao, dialog, uid);
+                save(agenticDialogDao, dialog, uid);
             }
             List<AgenticLog> logs = agenticLogDao.findAll((root, query, cb) -> cb.and(
                     cb.equal(root.get("chatId"), id), cb.equal(root.get("deletedTime"), 0L)));
@@ -1081,16 +1158,12 @@ public class AgenticService extends JPAServiceBase {
     }
 
     /** 打删除标记：会话、消息、运行日志共用（deletedTime=0 表示未删除） */
-    protected void markDeleted(Chat chat, int uid, long time) {
-        chat.setDeletedDetail("");
-        chat.setDeletedReason("");
+    protected void markDeleted(AgenticChat chat, int uid, long time) {
         chat.setDeletedTime(time);
         chat.setDeletedUid(uid);
     }
 
-    protected void markDeleted(ChatDialog dialog, int uid, long time) {
-        dialog.setDeletedDetail("");
-        dialog.setDeletedReason("");
+    protected void markDeleted(AgenticDialog dialog, int uid, long time) {
         dialog.setDeletedTime(time);
         dialog.setDeletedUid(uid);
     }

@@ -34,6 +34,8 @@ export interface AgenticStreamOptions {
 /** 一条消息（用户提问 / 助手回复 / 独立异常行）：页面与插槽都按它取字段 */
 export interface ChatMessageItem {
   id?: any
+  /** 父消息标识：0 表示分支起点，其余指向上一轮消息（消息树） */
+  parentId?: any
   role?: string
   content?: string
   reasoning?: string

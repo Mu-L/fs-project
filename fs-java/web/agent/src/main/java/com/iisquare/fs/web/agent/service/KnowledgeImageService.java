@@ -154,26 +154,46 @@ public class KnowledgeImageService extends JPAServiceBase {
 
     /**
      * 批量签发原图访问地址
+     * 指定 knowledgeId 时按该知识库校验归属与权限；未指定时按图片自身归属的知识库逐个判权
+     * （聊天历史没有知识库上下文，只能按图片归属判定，授权变更在下一次渲染即时生效）
      * 仅返回有权访问且在用的图片，其余图片由调用方使用默认图片兜底
      */
     public Map<String, Object> urls(Integer knowledgeId, List<String> ids, Integer expire, JsonNode identity) {
         ObjectNode data = DPUtil.objectNode();
         if (null == ids || ids.isEmpty()) return ApiUtil.result(1001, "图片标识不能为空", null);
-        Knowledge knowledge = knowledgeService.info(knowledgeId);
-        if (null == knowledge || 1 != knowledge.getStatus()) {
-            return ApiUtil.result(1002, "知识库不存在或已禁用", knowledgeId);
-        }
-        if (!permit(knowledge, identity)) {
-            logger.info("knowledge image denied: knowledgeId={}, uid={}", knowledgeId, identity.at("/id").asInt());
-            return ApiUtil.result(0, "无该知识库的查看权限", data);
-        }
         List<String> distinct = new ArrayList<>(new LinkedHashSet<>(ids));
         List<String> granted = new ArrayList<>();
         Map<String, KnowledgeImage> images = DPUtil.list2map(imageDao.findAllById(distinct), String.class, "id");
-        for (String id : distinct) {
-            KnowledgeImage image = images.get(id);
-            if (null == image || 1 != image.getStatus() || !knowledgeId.equals(image.getKnowledgeId())) continue;
-            granted.add(id);
+        if (null == knowledgeId || knowledgeId < 1) {
+            // 未指定知识库：按图片归属逐个判权，避免历史消息里残留已撤销授权的图片
+            Map<Integer, Knowledge> knowledges = new LinkedHashMap<>();
+            for (String id : distinct) {
+                KnowledgeImage image = images.get(id);
+                if (null == image || 1 != image.getStatus() || null == image.getKnowledgeId()) continue;
+                if (!knowledges.containsKey(image.getKnowledgeId())) {
+                    knowledges.put(image.getKnowledgeId(), knowledgeService.info(image.getKnowledgeId()));
+                }
+                if (!permit(knowledges.get(image.getKnowledgeId()), identity)) {
+                    logger.info("knowledge image denied: knowledgeId={}, imageId={}, uid={}",
+                            image.getKnowledgeId(), id, identity.at("/id").asInt());
+                    continue;
+                }
+                granted.add(id);
+            }
+        } else {
+            Knowledge knowledge = knowledgeService.info(knowledgeId);
+            if (null == knowledge || 1 != knowledge.getStatus()) {
+                return ApiUtil.result(1002, "知识库不存在或已禁用", knowledgeId);
+            }
+            if (!permit(knowledge, identity)) {
+                logger.info("knowledge image denied: knowledgeId={}, uid={}", knowledgeId, identity.at("/id").asInt());
+                return ApiUtil.result(0, "无该知识库的查看权限", data);
+            }
+            for (String id : distinct) {
+                KnowledgeImage image = images.get(id);
+                if (null == image || 1 != image.getStatus() || !knowledgeId.equals(image.getKnowledgeId())) continue;
+                granted.add(id);
+            }
         }
         if (granted.isEmpty()) {
             logger.warn("knowledge image not found: knowledgeId={}, requested={}", knowledgeId, distinct.size());

@@ -23,6 +23,12 @@ export default {
     return base.post('/tool/methods', param, tips)
   },
   /**
+   * 方法检索：工具与方法都可能有大量数据，选择器按关键词分页检索（行内含工具名与参数明细）
+   */
+  methodList (param: any, tips = {}) {
+    return base.post('/tool/methodList', param, tips)
+  },
+  /**
    * 解析预览：解析未保存的工具配置，返回方法清单但不落库
    */
   parse (param: any, tips = {}) {

@@ -3,9 +3,10 @@
  * 字段列表编辑器 - 按列定义渲染一组可增删的字段，供输入变量、输出变量、提取参数等场景复用。
  *
  * @v-model  {Array} 字段数组
- * @prop     {Array} columns - 列定义 `{ prop, type: 'input'|'select'|'variable'|'switch'|'textarea'|'radio', label, options, placeholder, default, icon, when }`
+ * @prop     {Array} columns - 列定义 `{ prop, type: 'input'|'select'|'variable'|'switch'|'textarea'|'radio', label, options, placeholder, default, icon, when, writable }`
  *                            options 取 config 中的字典名称，如 types、assignOperations
  *                            icon 取 Element Plus 图标名称，作为输入框/下拉框的前缀图标
+ *                            writable 仅对 variable 列有效：只列出可写入变量（容器内的元素/索引/循环变量）
  *                            when(item) 返回 false 时该列不渲染（如来源为固定值时不显示引用变量）
  * @prop     {Boolean} collapsible - 字段项是否可展开收起，收起时仅展示标题与类型摘要
  * @prop     {String} emptyText - 字段为空时的提示文案，为空则不展示提示
@@ -17,7 +18,7 @@ import LayoutIcon from '@/components/Layout/LayoutIcon.vue'
 import CollapseItem from './CollapseItem.vue'
 import { useCollapse } from './collapse'
 import config from './config'
-import { variableGroups, variableTokens } from './variable'
+import { referenceOfToken, variableGroups, variableTokens } from './variable'
 import VariableSelect from './VariableSelect.vue'
 
 const model: any = defineModel<any[]>({ required: true })
@@ -104,7 +105,9 @@ const variableLabels = computed<Record<string, string>>(() => {
 // 收起时的标题：优先取 titleProp 指定的字段（如赋值操作的目标变量），其次标题名称、变量名称
 const itemTitle = (item: any, index: number) => {
   const reference = String(item?.[titleProp] ?? '')
-  if (reference) return variableLabels.value[reference] || reference
+  // 取值可能是占位符（{{#节点标识.变量名#}}），按其中的变量引用查展示名称
+  const key = referenceOfToken(reference) || reference
+  if (key) return variableLabels.value[key] || key
   return item?.label || item?.name || '项 ' + (index + 1)
 }
 
@@ -139,6 +142,7 @@ const summaryTags = (item: any) => {
           :instance="instance"
           :active-item="activeItem"
           :icon="column.icon"
+          :writable="column.writable"
           allow-create
           :placeholder="column.placeholder ?? '请选择变量'" />
         <el-select

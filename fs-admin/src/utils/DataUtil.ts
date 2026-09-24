@@ -90,6 +90,8 @@ const DataUtil = {
     const fields = field.split('.')
     let value = obj
     for (const key of fields) {
+      // 中间节点缺失时返回 undefined：嵌套字段取值不应该直接抛错
+      if (null === value || undefined === value) return undefined
       value = value[key]
     }
     return value

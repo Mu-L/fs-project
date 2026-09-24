@@ -134,14 +134,30 @@ public class ServletUtil {
     }
 
     public static Object getSession(HttpServletRequest request, String key) {
-        HttpSession session = request.getSession();
+        return getSession(request, key, true);
+    }
+
+    /**
+     * 读取会话属性，create 为 false 且会话不存在时返回 null，避免创建空会话
+     */
+    public static Object getSession(HttpServletRequest request, String key, boolean create) {
+        HttpSession session = request.getSession(create);
+        if (null == session) return null;
         return session.getAttribute(key);
     }
 
     public static Map<String, Object> getSessionMap(HttpServletRequest request) {
-        HttpSession session = request.getSession();
-        Enumeration<String> enumeration = session.getAttributeNames();
+        return getSessionMap(request, true);
+    }
+
+    /**
+     * 读取会话属性集合，create 为 false 且会话不存在时返回空集合，避免创建空会话
+     */
+    public static Map<String, Object> getSessionMap(HttpServletRequest request, boolean create) {
+        HttpSession session = request.getSession(create);
         Map<String, Object> map = new HashMap<>();
+        if (null == session) return map;
+        Enumeration<String> enumeration = session.getAttributeNames();
         while (enumeration.hasMoreElements()) {
             String name = enumeration.nextElement().toString();
             map.put(name, session.getAttribute(name));

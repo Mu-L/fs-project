@@ -3,7 +3,7 @@
  * 大语言模型节点属性 - 模型配置（模型名称、温度、思考模式与强度、AGENT 策略、系统提示词、多模态输入参数）、
  * 用户输入（变量编辑器）、工具列表（可添加与启用/停用）、记忆配置。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import DesignUtil from '@/utils/DesignUtil'
 import AgenticApi from '@/api/agent/AgenticApi'
@@ -21,9 +21,8 @@ import SectionSlice from './SectionSlice.vue'
 import VariableField from './VariableField.vue'
 import VariableSelect from './VariableSelect.vue'
 import { useCollapse } from './collapse'
-import { loadToolMethods, methodAvailable, paramFields, paramHint, toolMethodCache, toolMethodsLoaded } from './tool'
+import { methodAvailable, paramFields, paramHint, toolMethodCache, toolMethodLoaded, toolMethodsLoaded } from './tool'
 import { variableToken } from './variable'
-import ApiUtil from '@/utils/ApiUtil'
 
 const active = ref('property')
 const model: any = defineModel()
@@ -41,25 +40,11 @@ const {
   remove: removeTool,
 } = useCollapse(() => 1 === (model.value?.data?.tools ?? []).length)
 
-// 内置工具：知识库、编排应用同样以 function calling 暴露给模型，参数只有 query
-const knowledgeRows = ref<any[]>([])
-const agenticRows = ref<any[]>([])
-const themeRows = ref<any[]>([])
-const ontologyRows = ref<any[]>([])
-const loadBuiltin = () => {
-  KnowledgeApi.list({ page: 1, limit: 200 }, { warning: false }).then((result: any) => {
-    knowledgeRows.value = ApiUtil.data(result)?.rows ?? []
-  }).catch(() => {})
-  AgenticApi.list({ page: 1, limit: 200 }, { warning: false }).then((result: any) => {
-    agenticRows.value = ApiUtil.data(result)?.rows ?? []
-  }).catch(() => {})
-  DataThemeApi.list({ page: 1, limit: 200 }, { warning: false }).then((result: any) => {
-    themeRows.value = ApiUtil.data(result)?.rows ?? []
-  }).catch(() => {})
-  OntologyApi.list({ page: 1, pageSize: 200 }, { warning: false }).then((result: any) => {
-    ontologyRows.value = ApiUtil.data(result)?.rows ?? []
-  }).catch(() => {})
-}
+/**
+ * 内置工具（知识库、数据主题、本体、编排）同样以 function calling 暴露给模型，参数只有 query。
+ * 候选列表交给 form-select 的远程检索：面板挂载不再预拉全量列表，
+ * 只在用户输入关键词检索、或回显已选值时按需请求
+ */
 
 /** 内置工具的函数名：模型 function calling 只接受字母数字与下划线 */
 const builtinName = (kind: string, id: any) => {
@@ -69,11 +54,18 @@ const builtinName = (kind: string, id: any) => {
   return `agentic_invoke_${id}`
 }
 
-/** 选择知识库/编排后：自动补函数名与描述（描述会展示给模型，用于判断何时调用） */
-const handleBuiltinChange = (item: any, kind: string, id: any) => {
-  const rows: any[] = 'knowledge' === kind ? knowledgeRows.value
-    : ('theme' === kind ? themeRows.value : ('ontology' === kind ? ontologyRows.value : agenticRows.value))
-  const row: any = rows.find((row: any) => row.id === id)
+/** 选中内置工具目标后：按选中行自动补函数名与描述（描述会展示给模型，用于判断何时调用） */
+const handleBuiltinSelect = (item: any, kind: string, id: any, row: any) => {
+  // 清空选择：函数名与描述一并清掉，避免留下 xxx_search_undefined 这类脏值
+  if (undefined === id || null === id || '' === id) {
+    item.name = ''
+    item.description = ''
+    if ('knowledge' === kind) item.knowledgeName = ''
+    else if ('theme' === kind) item.themeName = ''
+    else if ('ontology' === kind) item.ontologyName = ''
+    else item.agenticName = ''
+    return
+  }
   item.name = builtinName(kind, id)
   item.description = row?.description || row?.name || ''
   if ('knowledge' === kind) item.knowledgeName = row?.name ?? ''
@@ -92,7 +84,6 @@ const handleAddTool = (kind = 'method') => {
   if ('method' === kind) item.toolId = ''
   model.value.data.tools.push(item)
   openTool(model.value.data.tools.length - 1)
-  if ('method' === kind) loadMethods()
 }
 
 const handleRemoveTool = (index: number) => {
@@ -100,46 +91,53 @@ const handleRemoveTool = (index: number) => {
   removeTool(index)
 }
 
-// 工具清单：用于按 ID 补查工具名（老数据只存了 ID）
-const toolRows = ref<any[]>([])
-const toolNames = ref<Record<string, string>>({})
-// 方法清单：由后端解析工具配置后落库，这里按工具批量拉取并缓存（面板内响应式）
+// 方法明细缓存：按工具存放已取到的方法行，供执行变量与失效提示读取（面板内响应式）
 const methodCache = ref<Record<string, any[]>>({})
 const refreshMethods = () => { methodCache.value = Object.assign({}, toolMethodCache.data) }
-const methodsLoading = ref(false)
+
 /**
- * 批量拉取方法清单：工具方法下拉按工具分组展示，需要所有工具的方法，因此按工具清单整体拉取
- * （已拉取过的工具不会重复请求，见 tool.ts 的缓存策略）
+ * 写入方法明细：选择器返回的行自带参数明细，选中即缓存。
+ * 工具与方法都可能有大量数据，不再按工具全量拉取，缓存只为已选中的方法服务
  */
-const loadMethods = () => {
-  const ids: any[] = toolRows.value.map((tool: any) => tool.id)
-  ;(model.value?.data?.tools ?? []).forEach((item: any) => {
-    if (item?.toolId && ids.indexOf(item.toolId) < 0) ids.push(item.toolId)
-  })
-  const unique: any[] = []
-  ids.forEach((id: any) => { if (id && unique.indexOf(id) < 0) unique.push(id) })
-  if (!unique.length) return Promise.resolve()
-  methodsLoading.value = true
-  return loadToolMethods(unique).then(() => {
-    refreshMethods()
-    syncToolArgs()
-  }).catch(() => {}).finally(() => {
-    methodsLoading.value = false
+const cacheMethod = (row: any) => {
+  if (!row?.toolId || !row?.name) return
+  const key = String(row.toolId)
+  const rows: any[] = toolMethodCache.data[key] ?? []
+  const index = rows.findIndex((item: any) => item.name === row.name)
+  if (index >= 0) rows[index] = row
+  else rows.push(row)
+  toolMethodCache.data[key] = rows
+  toolMethodLoaded[key] = true
+  refreshMethods()
+}
+
+/**
+ * 方法检索：候选走服务端分页检索（/tool/methodList），工具名与方法名都能命中。
+ * 取值形如 `工具ID.方法名`：检索时按关键词查，回显时拆成工具与方法精确命中，选中行顺带写入明细缓存
+ */
+const handleMethodSelect = (params: any) => {
+  const value = String(params?.value ?? '')
+  const at = value.indexOf('.')
+  const request: any = Object.assign({}, params, { withDetail: true })
+  delete request.value
+  if (at > 0) {
+    request.toolId = value.slice(0, at)
+    request.name = value.slice(at + 1)
+  }
+  return ToolApi.methodList(request).then((result: any) => {
+    const rows: any[] = result?.data?.rows ?? []
+    rows.forEach((row: any) => cacheMethod(row))
+    return {
+      data: {
+        rows: rows.map((row: any) => Object.assign({}, row, {
+          value: `${row.toolId}.${row.name}`,
+          group: row.toolName,
+          disabled: !methodAvailable(row),
+        })),
+      },
+    }
   })
 }
-onMounted(() => {
-  // 内置工具（知识库、编排）的下拉数据
-  loadBuiltin()
-  ToolApi.list({ pageSize: 200 }).then((result: any) => {
-    const rows: any[] = ApiUtil.data(result)?.rows ?? []
-    const map: Record<string, string> = {}
-    rows.forEach((row: any) => { map[String(row.id)] = row.name })
-    toolRows.value = rows
-    toolNames.value = map
-    syncToolArgs()
-    loadMethods()
-  }).catch(() => {})
-})
 
 // 收起时的标题：工具名（+ 方法名），未选择时给出提示
 const toolTitle = (item: any) => {
@@ -147,7 +145,7 @@ const toolTitle = (item: any) => {
   if ('theme' === item?.kind) return `数据主题 · ${item.themeName || item.themeId || '未选择'}`
   if ('ontology' === item?.kind) return `本体 · ${item.ontologyName || item.ontologyId || '未选择'}`
   if ('agentic' === item?.kind) return `编排 · ${item.agenticName || item.agenticId || '未选择'}`
-  const name = item.toolName || toolNames.value[String(item.toolId ?? '')] || '未选择工具'
+  const name = item.toolName || item.toolId || '未选择工具'
   return item.method ? `${name} · ${item.method}` : name
 }
 
@@ -155,15 +153,6 @@ const toolTitle = (item: any) => {
 const methodsOf = (item: any) => {
   return item?.toolId ? methodCache.value[String(item.toolId)] ?? [] : []
 }
-
-/** 工具方法下拉的选项：按工具分组，只列出解析出方法的工具 */
-const toolOptions = computed(() => {
-  return toolRows.value.map((tool: any) => ({
-    id: tool.id,
-    name: tool.name,
-    methods: methodCache.value[String(tool.id)] ?? [],
-  })).filter((tool: any) => tool.methods.length)
-})
 
 /** 工具方法下拉的取值：`工具ID.方法名`（方法名已规范化为 [0-9a-zA-Z_-]，不含点） */
 const toolMethodValue = (item: any) => {
@@ -261,6 +250,8 @@ const fieldArgOf = (item: any, parameter: any, field: any) => {
 
 /** 按当前方法补齐/清理执行变量绑定，避免切换方法后残留上个方法的参数 */
 const syncArgs = (item: any) => {
+  // 方法明细未取到时不重建绑定：避免把已配置的执行变量清空（明细随选中行或回显补齐）
+  if (item?.method && !methodsOf(item).length) return item
   const current: any = item?.args && 'object' === typeof item.args ? item.args : {}
   const next: any = {}
   paramsOf(item).forEach((parameter: any) => {
@@ -290,11 +281,12 @@ const syncToolArgs = () => {
 watch(model, (value: any) => {
   if (!value?.data) return
   syncToolArgs()
-  loadMethods()
 }, { immediate: true })
 
-// 选择工具方法：拆出工具与方法，换方法后按新方法的参数重建执行变量
-const handleToolMethodChange = (item: any, value: any) => {
+/** 选择工具方法：拆出工具与方法，换方法后按新方法的参数重建执行变量；row 为选中行（自带参数明细） */
+const handleToolMethodChange = (item: any, value: any, row: any = null) => {
+  // 选中行先入缓存，后面按方法参数重建执行变量时才有明细可读
+  if (row) cacheMethod(row)
   const text = String(value ?? '')
   const at = text.indexOf('.')
   if (at < 0) {
@@ -302,10 +294,9 @@ const handleToolMethodChange = (item: any, value: any) => {
     item.toolName = ''
     item.method = ''
   } else {
-    const toolId: string = text.slice(0, at)
-    const tool: any = toolRows.value.find((row: any) => String(row.id) === toolId)
-    item.toolId = toolId
-    item.toolName = tool?.name ?? ''
+    item.toolId = text.slice(0, at)
+    // 工具名由选中行带出，不必为了展示再拉一次工具清单
+    item.toolName = row?.toolName ?? item.toolName ?? ''
     item.method = text.slice(at + 1)
   }
   item.args = {}
@@ -361,13 +352,12 @@ const handleToolMethodChange = (item: any, value: any) => {
                 @delete="handleRemoveTool(index)">
                 <!-- 知识库工具：模型给出 query，节点按知识库召回后回填 -->
                 <template v-if="'knowledge' === item.kind">
-                  <el-select
+                  <form-select
                     v-model="item.knowledgeId"
-                    filterable
-                    placeholder="请选择知识库"
-                    @change="(value: any) => handleBuiltinChange(item, 'knowledge', value)">
-                    <el-option :key="row.id" :value="row.id" :label="row.name" v-for="row in knowledgeRows" />
-                  </el-select>
+                    clearable
+                    :callback="KnowledgeApi.list"
+                    placeholder="输入名称检索知识库"
+                    @change="(value: any, row: any) => handleBuiltinSelect(item, 'knowledge', value, row)" />
                   <el-input v-model="item.name" placeholder="函数名称，如 knowledge_search_1" />
                   <el-input
                     v-model="item.description"
@@ -378,13 +368,12 @@ const handleToolMethodChange = (item: any, value: any) => {
                 </template>
                 <!-- 编排工具：模型给出 query，作为开始节点入参调用另一个编排应用 -->
                 <template v-else-if="'agentic' === item.kind">
-                  <el-select
+                  <form-select
                     v-model="item.agenticId"
-                    filterable
-                    placeholder="请选择编排应用"
-                    @change="(value: any) => handleBuiltinChange(item, 'agentic', value)">
-                    <el-option :key="row.id" :value="row.id" :label="row.name" v-for="row in agenticRows" />
-                  </el-select>
+                    clearable
+                    :callback="AgenticApi.list"
+                    placeholder="输入名称检索编排应用"
+                    @change="(value: any, row: any) => handleBuiltinSelect(item, 'agentic', value, row)" />
                   <el-input v-model="item.name" placeholder="函数名称，如 agentic_invoke_1" />
                   <el-input
                     v-model="item.description"
@@ -395,13 +384,12 @@ const handleToolMethodChange = (item: any, value: any) => {
                 </template>
                 <!-- 数据主题工具：不带 sql 返回主题数据字典（数据集/字段/关联），带 sql 执行查询 -->
                 <template v-else-if="'theme' === item.kind">
-                  <el-select
+                  <form-select
                     v-model="item.themeId"
-                    filterable
-                    placeholder="请选择数据主题"
-                    @change="(value: any) => handleBuiltinChange(item, 'theme', value)">
-                    <el-option :key="row.id" :value="row.id" :label="row.name" v-for="row in themeRows" />
-                  </el-select>
+                    clearable
+                    :callback="DataThemeApi.list"
+                    placeholder="输入名称检索数据主题"
+                    @change="(value: any, row: any) => handleBuiltinSelect(item, 'theme', value, row)" />
                   <el-input v-model="item.name" placeholder="函数名称，如 theme_query_1" />
                   <el-input
                     v-model="item.description"
@@ -412,13 +400,12 @@ const handleToolMethodChange = (item: any, value: any) => {
                 </template>
                 <!-- 本体工具：模型给出实体类型与关键词，走 KG 图检索 -->
                 <template v-else-if="'ontology' === item.kind">
-                  <el-select
+                  <form-select
                     v-model="item.ontologyId"
-                    filterable
-                    placeholder="请选择本体"
-                    @change="(value: any) => handleBuiltinChange(item, 'ontology', value)">
-                    <el-option :key="row.id" :value="row.id" :label="row.name" v-for="row in ontologyRows" />
-                  </el-select>
+                    clearable
+                    :callback="OntologyApi.list"
+                    placeholder="输入名称检索本体"
+                    @change="(value: any, row: any) => handleBuiltinSelect(item, 'ontology', value, row)" />
                   <el-input v-model="item.name" placeholder="函数名称，如 ontology_search_1" />
                   <el-input
                     v-model="item.description"
@@ -429,31 +416,22 @@ const handleToolMethodChange = (item: any, value: any) => {
                 </template>
                 <!-- 工具与方法用一个分组下拉选择：按工具分组列出其方法，避免两级选择 -->
                 <template v-else>
-                <el-select
-                  :model-value="toolMethodValue(item)"
-                  filterable
-                  clearable
-                  :loading="methodsLoading"
-                  placeholder="请选择工具方法"
-                  @change="(value: any) => handleToolMethodChange(item, value)">
-                  <el-option-group :key="tool.id" :label="tool.name" v-for="tool in toolOptions">
-                    <el-option
-                      :key="`${tool.id}.${method.name}`"
-                      :value="`${tool.id}.${method.name}`"
-                      :label="`${tool.name} · ${methodLabel(method)}`"
-                      :disabled="!methodAvailable(method)"
-                      v-for="method in tool.methods">{{ methodLabel(method) }}</el-option>
-                  </el-option-group>
-                </el-select>
-                <div class="method-tip" v-if="!toolOptions.length && !methodsLoading">
-                  暂无可用的工具方法：工具页里保存或「重新解析」后即可选择
-                </div>
-                <div class="method-tip" v-else-if="item.method && toolMethodsLoaded(item.toolId) && !methodsOf(item).length">
-                  该工具未解析到方法，请到工具页重新解析
-                </div>
-                <div class="method-tip" v-else-if="item.method && methodsOf(item).length && !methodUsable(item)">
-                  该方法已失效或已停用，请重新选择方法
-                </div>
+                  <form-select
+                    :model-value="toolMethodValue(item)"
+                    clearable
+                    field-value="value"
+                    :page-size="50"
+                    group-field="group"
+                    :callback="handleMethodSelect"
+                    :label-formatter="(row: any) => methodLabel(row)"
+                    placeholder="输入工具名或方法名检索"
+                    @change="(value: any, row: any) => handleToolMethodChange(item, value, row)" />
+                  <div class="method-tip" v-if="item.method && toolMethodsLoaded(item.toolId) && !methodsOf(item).length">
+                    该工具未解析到方法，请到工具页重新解析
+                  </div>
+                  <div class="method-tip" v-else-if="item.method && methodsOf(item).length && !methodUsable(item)">
+                    该方法已失效或已停用，请重新选择方法
+                  </div>
                 <!-- 执行变量：对象参数按字段分别配置，其余参数可整体替换 -->
                 <div class="arg-list" v-if="paramsOf(item).length">
                   <div class="arg-block" :key="parameter.name" v-for="parameter in paramsOf(item)">

@@ -54,6 +54,9 @@
 - 按连线从开始节点推导执行顺序（条件分支按命中的 case 只走对应的边），逐节点执行并记录步骤明细；
 - 变量引用统一为 `{{#节点标识.变量名#}}`：整串就是一个引用时返回原始值（保留对象/数组），
   否则按文本替换，因此「固定字符串 + 变量」可以混排（工具执行变量、模板、提示词都是同一套规则）；
+  设计器里所有变量字段都按这套规范写入（下拉选择与手工输入的 `sys.xxx` / `conversation.xxx` 都写成占位符），
+  「变量赋值」的目标变量同样按引用定位：`{{#容器标识.变量名#}}` 写回对应容器的作用域（嵌套容器里的同名变量也能区分）、
+  `{{#conversation.变量名#}}` 写会话变量；运行时兼容历史数据里直接存的裸取值（容器作用域键、会话变量名）；
 - 系统变量（`{{#sys.xxx#}}`，由运行上下文注入，一次运行内保持不变）：`sys.appId` 应用标识、
   `sys.userId` / `sys.userName` 调用人、`sys.conversationId` 会话标识、
   `sys.datetime` 当前时间（东八区，`yyyy-MM-dd HH:mm:ss`）、`sys.date` 当前日期（东八区，`yyyy-MM-dd`）；
@@ -119,12 +122,28 @@
 | POST `/agentic/chatDelete` | 删除会话（连同消息与运行日志） | `agent:agentic:delete` |
 | POST `/agentic/chatFeedback` | 消息反馈：点赞/点踩（可附标签与说明），再次提交同一情绪表示取消 | `agent:agentic:` |
 
-多轮对话：`run` / `invoke` 支持传 `chatId`（0 或空表示新建），会话落在 `fs_agent_chat` 与 `fs_agent_chat_dialog`，
-类型区分 `agentic`（发布应用）与 `agentic_draft`（调试运行）；历史消息作为模型上下文传给大模型节点，
+多轮对话：`run` / `invoke` 支持传 `chatId`（0 或空表示新建），会话落在 `fs_agent_agentic_chat` 与
+`fs_agent_agentic_dialog`，类型区分 `published`（发布应用）与 `draft`（调试运行），且只能续写
+「同一编排 + 同一类型 + 同一用户」的会话；历史消息作为模型上下文传给大模型节点，
 返回结果里回带 `chatId`，下次带同一 `chatId` 即可继续对话。运行日志带 `chatId`，按会话可回看每轮的节点与工具明细。
-`run` / `invoke` 还会回带本轮消息标识 `questionId` / `answerId`，调试面板可据此对回复直接反馈。
+`run` / `invoke` 还会回带本轮消息标识 `questionId` / `answerId` / `leafId`，调试面板可据此对回复直接反馈。
 `chatInfo` 的消息里会带上本轮的运行日志标识 `logId`（按日志输出里的 `answerId` 关联），
 前端据此按需拉取该轮的完整节点与工具调用过程（`logInfo`），用于定位与追踪问题。
+
+#### 对话分支（编辑提问 / 重新生成）
+
+消息按 `parent_id` 组成一棵消息树：`0` 表示分支起点，其余指向上一轮消息；会话的 `leaf_id` 记录当前分支尾，
+模型上下文按 `leaf_id` 沿 `parent_id` 回溯取（`chatInfo` 会返回每条消息的 `parentId` 与会话的 `leafId`，
+前端据此还原消息树并做分支切换）。两个可选入参驱动分支：
+
+| 入参 | 取值 | 说明 |
+| --- | --- | --- |
+| `parentId` | 整数，可不传 | 从哪条消息往下续写；不传表示接在会话当前分支尾，显式传 0 表示从会话起点新起分支（编辑第一条提问重新发送） |
+| `reuseQuestion` | true / false，默认 false | 重新生成：不重复落用户消息，只在 `parentId` 指向的用户消息下新增一条助手回复 |
+
+编辑提问时带 `parentId = 被编辑消息的 parentId`（普通提问，落用户消息 + 助手回复）；
+重新生成时带 `parentId = 被重新生成的助手回复对应的用户消息 id` 与 `reuseQuestion = true`。
+两种方式都会新起分支并更新会话的 `leafId`，原分支的消息与运行日志都保留。
 
 ### 授权角色
 
@@ -146,7 +165,7 @@
 记忆按「节点自身的配置」逐节点生效：节点之间不共享历史、也不互相读取对方的输入输出；需要上游数据时一律用
 `{{#节点标识.变量名#}}` 显式引用（唯一例外是「输出图表」节点，见上文——它按职责读取本轮的用户问题与直连大语言模型的回复、工具调用）。
 
-节点配置 `memory` 的四个字段（`fs_agent_chat_dialog` 里每轮存一条用户消息与一条助手回复，记忆从这里取）：
+节点配置 `memory` 的四个字段（`fs_agent_agentic_dialog` 里每轮存一条用户消息与一条助手回复，记忆从这里取）：
 
 | 字段 | 取值 | 说明 |
 | --- | --- | --- |
@@ -240,6 +259,8 @@ POST /knowledgeImage/url
 
 - 鉴权规则：按请求会话识别登录用户，用户需命中知识库 `role_ids` 授权角色，
   知识库未配置授权角色时仅要求登录。
+  `knowledgeId` 可省略：省略时按图片自身归属的知识库逐个判权（聊天历史等无知识库上下文的场景），
+  授权变更在下一次渲染即时生效，历史消息里的图片同步不可见。
 - 只有归属该知识库且在用的图片才会出现在返回值中，其余情况（无权限、不存在、不属于该知识库）
   一律不返回，调用方对缺失的图片使用自身默认图兜底，避免探测图片是否存在。
 - 前端默认图放在前端项目的公共目录（`public/images/no-permit.png`），不由后端输出。
@@ -331,10 +352,20 @@ JPA 表前缀策略为 `com.iisquare.fs.web.agent.dsconfig.NamingStrategy`。
 
 ## 数据与存储
 
-- MySQL：`fs_agent_agent`、`fs_agent_knowledge`、`fs_agent_knowledge_chunk`、
-  `fs_agent_agentic`（编排草稿与发布内容）、`fs_agent_knowledge_document`、`fs_agent_knowledge_image`、
+- MySQL：`fs_agent_agentic`（编排草稿与发布内容）、`fs_agent_agentic_chat`（会话）、
+  `fs_agent_agentic_dialog`（会话消息）、`fs_agent_agentic_log`（运行日志）、
+  `fs_agent_knowledge`、`fs_agent_knowledge_chunk`、`fs_agent_knowledge_document`、`fs_agent_knowledge_image`、
   `fs_agent_knowledge_segment`、`fs_agent_skill`、`fs_agent_skill_version`、`fs_agent_tool`，
-  建表语句见 `docs/fs_project_agent.sql`。
+  建表语句见 `docs/fs_project_agent.sql`，存量库改造见 `docs/fs_project_agent_migrate.sql`。
 - Elasticsearch：检索块集合 `fs_lm_knowledge_chunk`。
 - 文件服务：桶 `fs-lm-knowledge`、`fs-lm-skill`。
-- `Chat`、`ChatCompare`、`ChatDemo`、`ChatDialog` 为历史实体，不建表。
+
+#### 会话表结构说明
+
+- `fs_agent_agentic_chat`：`agentic_id` 归属编排（列表按编排直查，不再子查询运行日志）、`leaf_id` 当前分支尾、
+  `deleted_time` / `deleted_uid` 标记删除与删除人；不存删除原因与描述。
+- `fs_agent_agentic_dialog`：`parent_id` 消息树父节点、`reference` 工具调用明细与图表、
+  `feedback_*` 点赞点踩；不存意图识别、结束原因与审核字段——会话审核若要做成闭环，
+  另建审核表留痕（多次审核）比在消息行上放单值列更合适。
+- `fs_agent_tool.content_hash` / `parse_status` 已删除：标注为「解析缓存 / 解析状态」用，
+  但保存与手动重解析都会真实重解析，页面提示读的是 `parse_error`，两者从未被读取。

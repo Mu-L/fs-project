@@ -14,6 +14,7 @@ import ChatElevator from '@/components/Chat/ChatElevator.vue'
 import ChatMessage from '@/components/Chat/ChatMessage.vue'
 import useAgenticStream from '@/composables/useAgenticStream'
 import useChatFeedback from '@/composables/useChatFeedback'
+import useChatBranch from '@/composables/useChatBranch'
 import useChatScroll from '@/composables/useChatScroll'
 import AgenticUtil from '@/utils/AgenticUtil'
 import ApiUtil from '@/utils/ApiUtil'
@@ -39,7 +40,12 @@ const chatId = ref(0)
 const { bodyRef: chatRef, handleScroll, scrollBottom } = useChatScroll()
 const info: any = ref({})
 const infoLoading = ref(false)
-const messages = computed<any[]>(() => info.value?.messages ?? [])
+/**
+ * 对话分支：消息按 parentId 组成消息树，页面只渲染当前分支那条路径，
+ * 同一处有多条分支时（编辑提问 / 重新生成）显示「◀ 2/3 ▶」切换（见 composables/useChatBranch）
+ */
+const branch = useChatBranch()
+const messages = computed<any[]>(() => branch.visible.value)
 
 /** 路由里的对话标识：刷新或重新打开页面时据此恢复历史会话 */
 const routeChatId = () => Number(route.query.chatId ?? 0) || 0
@@ -65,7 +71,7 @@ const loadChats = () => {
   return AgenticApi.chatList({
     page: 1,
     limit: 100,
-    type: 'agentic',
+    type: 'published',
     title: keyword.value,
     createdUid: user.info.id,
   }, { warning: false }).then((result: any) => {
@@ -93,6 +99,8 @@ const handleOpen = (item: any) => {
   infoLoading.value = true
   AgenticApi.chatInfo(item.id, { warning: false }).then((result: any) => {
     info.value = ApiUtil.data(result) ?? {}
+    // 装载消息树：leafId 是会话当前分支尾，缺失时取最后一条消息
+    branch.setMessages(info.value?.messages, info.value?.leafId)
     const runs = info.value?.runs ?? []
     if (runs.length) agenticId.value = runs[0].agenticId
     nextTick(() => scrollBottom(true))
@@ -106,6 +114,7 @@ const handleNew = () => {
   chatId.value = 0
   syncRouteChat(0)
   info.value = {}
+  branch.reset()
   message.value = ''
 }
 
@@ -139,13 +148,35 @@ const handleSend = () => {
     ElMessage.warning(`请填写必填参数：${missingText.value}`)
     return
   }
+  const files = runFiles.value.slice()
   message.value = ''
+  runFiles.value = []
+  // 续写位置：会话当前分支尾（没有分支时就是最后一条消息）
+  sendRound({ text, files, parentId: branch.activeLeaf.value })
+}
+
+/**
+ * 起一轮对话：普通提问落「用户气泡 + 回复气泡」，重新生成（reuseQuestion）只落回复气泡。
+ * parentId 指定这条消息接在哪条消息之后，新起的分支与原分支同时保留（见 composables/useChatBranch）。
+ */
+const sendRound = (options: any) => {
+  if (sending.value) {
+    ElMessage.warning('上一轮对话还在运行中，请稍候')
+    return
+  }
+  const text = String(options?.text ?? '')
+  const files: any[] = Array.isArray(options?.files) ? options.files.slice() : []
+  const parentId = Number(options?.parentId ?? 0) || 0
+  const reuseQuestion = true === options?.reuseQuestion
   sending.value = true
-  // 先补一条提问，避免等待期间看不到自己发的内容
-  const question: any = { role: 'user', content: text, createdTime: Date.now(), notice: null }
-  if (runFiles.value.length) {
-    question.files = runFiles.value.slice()
-    question.content = text || `（上传了 ${runFiles.value.length} 个文件）`
+  // 消息统一放在分支视图的消息数组里（历史会话装载后与 info.messages 是同一个数组）
+  const list: any[] = branch.messages.value
+  let question: any = null
+  if (!reuseQuestion) {
+    // 先补一条提问，避免等待期间看不到自己发的内容
+    question = { role: 'user', content: text || `（上传了 ${files.length} 个文件）`, createdTime: Date.now(), notice: null, parentId }
+    if (files.length) question.files = files
+    list.push(question)
   }
   // 本轮的回复消息：流式增量直接写在这里，结束后补上日志标识与异常提示
   const reply: any = reactive({
@@ -157,6 +188,7 @@ const handleSend = () => {
     createdTime: 0,
     logId: 0,
     charts: [],
+    parentId,
     // 实时执行进度：后端每执行一个节点推一次 step 事件（只含节点与状态）
     progress: [],
     // 实时 ReAct 轮次：后端每轮模型推理与每次工具方法调用推一次 round 事件
@@ -164,9 +196,10 @@ const handleSend = () => {
     // 完整步骤：运行结束后后端随运行结果返回，历史会话再按 logId 拉取
     steps: [],
   })
-  if (!Array.isArray(info.value.messages)) info.value.messages = []
-  info.value.messages.push(question)
-  info.value.messages.push(reply)
+  list.push(reply)
+  // 分支视图先切到这条尚未落库的回复：重新生成时上一次的输出随之隐藏，可再用「◀ n/m ▶」切回；
+  // 新提问一并登记，接在会话起点（编辑第一条提问）时也能算出当前分支，不必退回整条会话
+  branch.setPending(reply, question)
   nextTick(() => scrollBottom(true))
   // 本轮上下文：流式回调按「当前提问 / 当前回复」写屏，发送前先登记
   turn.reply = reply
@@ -174,10 +207,33 @@ const handleSend = () => {
   stream.send({
     id: agenticId.value,
     chatId: chatId.value,
+    // 分支位置：新消息接在 parentId 之后；reuseQuestion 表示这是重新生成
+    parentId,
+    reuseQuestion,
     // 自定义参数随每轮入参一起提交：固定输入为 query / files，其余来自参数表单
-    inputs: { query: text, files: runFiles.value.slice(), ...paramInputs() },
+    inputs: { query: text, files, ...paramInputs() },
   })
-  runFiles.value = []
+}
+
+/** 切换分支：按当前消息的兄弟节点前后移动（只影响展示与续写位置，不动数据） */
+const handleSwitch = (item: any, step: number) => {
+  branch.switchBranch(item, step)
+  nextTick(() => scrollBottom(true))
+}
+
+/** 编辑提问后重新发送：新消息接在被编辑消息的父节点下，形成新分支 */
+const handleEdit = (item: any, content: string) => {
+  sendRound({ text: content, files: item?.files ?? [], parentId: item?.parentId ?? 0 })
+}
+
+/** 重新生成回复：不重复落用户消息，只在同一条提问下新增一条助手回复 */
+const handleRegenerate = (item: any) => {
+  const question: any = branch.messages.value.find((row: any) => String(row?.id) === String(item?.parentId))
+  if (!question) {
+    ElMessage.warning('找不到该回复对应的提问，无法重新生成')
+    return
+  }
+  sendRound({ text: String(question.content ?? ''), files: question.files ?? [], parentId: item.parentId, reuseQuestion: true })
 }
 
 const sending = ref(false)
@@ -231,6 +287,10 @@ const fallbackInvoke = (payload: any, reply: any, question: any) => {
     chatId.value = data.chatId ?? chatId.value
     syncRouteChat(chatId.value)
     loadChats()
+    // 落库标识：提问补 id、回复补父消息，分支尾指向本轮回复
+    if (question) question.id = data.questionId ?? question.id ?? 0
+    reply.parentId = data.questionId ? data.questionId : reply.parentId
+    branch.commit(reply, data.leafId)
   }).catch((error: any) => {
     question.notice = {
       summary: ApiUtil.message(error) || '发送失败',
@@ -327,6 +387,10 @@ const stream = useAgenticStream({
     // 首轮回复落库后会话才真正创建：把会话标识补进路由，刷新后仍在同一会话里
     syncRouteChat(chatId.value)
     loadChats()
+    // 落库标识与分支位置：提问补 id、回复补父消息，分支尾指向本轮回复
+    if (turn.question) turn.question.id = data.questionId ?? turn.question.id ?? 0
+    reply.parentId = data.questionId ? data.questionId : reply.parentId
+    branch.commit(reply, data.leafId)
   },
   onClose: () => {
     if (turn.reply) turn.reply.streaming = false
@@ -607,7 +671,13 @@ onBeforeUnmount(() => {
           :item="item"
           :streaming="item.streaming"
           :disabled="feeding === item.id"
-          @submit="(payload: any) => handleFeedback(item, payload)">
+          :branch="branch.branchOf(item)"
+          :editable="'user' === item.role && !!item.id && !sending"
+          :regenerable="'assistant' === item.role && !!item.id && !sending"
+          @submit="(payload: any) => handleFeedback(item, payload)"
+          @switch="(step: number) => handleSwitch(item, step)"
+          @edit="(content: string) => handleEdit(item, content)"
+          @regenerate="handleRegenerate(item)">
           <!-- 执行过程（置顶）：节点与节点内部的工具调用全部用时间线展示，运行中实时刷新 -->
           <template #steps>
             <AgenticTimeline

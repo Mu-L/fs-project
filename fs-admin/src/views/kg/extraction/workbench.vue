@@ -571,7 +571,7 @@ onMounted(() => {
             <div class="wb-sources__page">
               <span class="wb-sources__page-tip">共 {{ pagination.total }} 条</span>
               <el-pagination
-                small
+                size="small"
                 layout="prev, pager, next"
                 :total="pagination.total"
                 :current-page="pagination.page"

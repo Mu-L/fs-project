@@ -35,10 +35,6 @@ public class Tool {
     @Column
     private String content; // 配置信息
     @Column
-    private String contentHash; // 配置内容指纹：解析缓存用，内容未变可跳过重解析
-    @Column
-    private Integer parseStatus; // 解析状态：1-成功，2-失败
-    @Column
     private String parseError; // 解析失败原因，供页面提示
     @Column
     private Integer sort;

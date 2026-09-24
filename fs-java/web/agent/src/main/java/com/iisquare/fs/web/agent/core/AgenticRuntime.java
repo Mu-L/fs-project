@@ -401,6 +401,17 @@ public class AgenticRuntime {
         return this.text(text, outputs, context);
     }
 
+    /**
+     * 变量引用的字面量 - 整串是占位符（`{{#节点标识.变量名#}}`、`{{#sys.变量名#}}`、`{{#conversation.变量名#}}`）
+     * 时取其中的引用，否则按原文返回（兼容历史数据里直接存裸取值的字段，如赋值节点的目标变量）。
+     * 用于「引用本身就是要写入的取值」的字段：这类字段不能用 value() 解析取值，只需要统一规范的书写形式
+     */
+    public static String referenceLiteral(String text) {
+        String value = DPUtil.parseString(text).trim();
+        Matcher matcher = TOKEN.matcher(value);
+        return matcher.matches() ? matcher.group(1).trim() : value;
+    }
+
     public String text(String text, Map<String, ObjectNode> outputs, Map<String, Object> context) {
         if (DPUtil.empty(text)) return "";
         Matcher matcher = TOKEN.matcher(text);

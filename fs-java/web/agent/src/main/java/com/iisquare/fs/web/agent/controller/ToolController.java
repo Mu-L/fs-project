@@ -70,6 +70,18 @@ public class ToolController extends PermitControllerBase {
     }
 
     /**
+     * 方法检索：工具与方法都可能有大量数据，选择器按关键词分页检索（行内含工具名与参数明细），
+     * 不再为了一个下拉框全量拉取所有工具的所有方法
+     */
+    @RequestMapping("/methodList")
+    @Permission("")
+    public String methodListAction(@RequestBody Map<String, Object> param) {
+        ObjectNode result = toolMethodService.search(param,
+                DPUtil.buildMap("withStatusText", true, "withDetail", true));
+        return ApiUtil.echoResult(0, null, result);
+    }
+
+    /**
      * 解析预览：解析未保存的工具配置，返回方法清单但不落库（编辑抽屉里粘贴 / 同步后立即可见）
      */
     @RequestMapping("/parse")

@@ -4,7 +4,7 @@
  * 页面只需关心「收到增量怎么画」「结束后做什么」，不再各写一份 FetchEventSource 分支。
  *
  * 事件约定（与后端一致）：`{ type: delta|step|round|done|error, data }`
- * - 报文协议不同的接口（如 /chat/dialog 的 `{ action, data }`）由 `parse` 归一成上面的事件数组，
+ * - 报文协议不同的接口（如 /compare/stream 的 `{ action, data }`）由 `parse` 归一成上面的事件数组，
  *   端点与适配统一登记在 `@/api/agent/streams`，页面 `...streams.xxx` 直接复用；
  * - 业务失败（授权被撤销、缺少必填参数等）在流式通道里就是 error 事件，这里统一转给 onError；
  * - 主动中断（页面上的「停止生成」）不算失败：只收尾（onClose），不会触发 onError；
